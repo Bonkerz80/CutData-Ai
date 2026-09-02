@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-build/
+.tools/
+build/
+dist/
+installer/
+*.spec
+!CutData AI.spec
+*.sqlite3
+*.sqlite3-*
