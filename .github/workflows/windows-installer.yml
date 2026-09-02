@@ -34,6 +34,10 @@ jobs:
         shell: pwsh
         run: .\build_windows.ps1
 
+      - name: Verify real window startup with a clean environment
+        shell: pwsh
+        run: .\.venv-build\Scripts\python.exe scripts/verify_windows_bundle.py "dist/CutData AI/CutData AI.exe" --launch-check
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --yes --no-progress
@@ -46,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CutData-AI-Windows-Installer
-          path: installer/CutData-AI-Setup-0.1.0.exe
+          path: installer/CutData-AI-Setup-0.1.1.exe
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -54,4 +58,4 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "installer\CutData-AI-Setup-0.1.0.exe" --title "CutData AI ${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" "installer\CutData-AI-Setup-0.1.1.exe" --title "CutData AI ${{ github.ref_name }}" --generate-notes

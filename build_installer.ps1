@@ -15,9 +15,9 @@ if (-not $iscc) {
 
 $appExe = Join-Path $projectRoot 'dist\CutData AI\CutData AI.exe'
 if (-not (Test-Path -LiteralPath $appExe)) {
-    $buildArguments = @()
+    $buildArguments = @{}
     if (Test-Path -LiteralPath (Join-Path $projectRoot '.venv-build\Scripts\python.exe')) {
-        $buildArguments = @('-SkipDependencyInstall')
+        $buildArguments = @{ SkipDependencyInstall = $true }
     }
     & (Join-Path $projectRoot 'build_windows.ps1') @buildArguments
     if ($LASTEXITCODE -ne 0) {
@@ -28,10 +28,13 @@ if (-not (Test-Path -LiteralPath $appExe)) {
 $outputDir = Join-Path $projectRoot 'installer'
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
+& (Join-Path $projectRoot '.venv-build\Scripts\python.exe') (Join-Path $projectRoot 'scripts\verify_windows_bundle.py') $appExe
+if ($LASTEXITCODE -ne 0) { throw 'Native dependency validation failed; refusing to package this bundle.' }
+
 & $iscc "/Qp" (Join-Path $projectRoot 'installer.iss')
 if ($LASTEXITCODE -ne 0) {
     throw 'The Inno Setup installer build failed.'
 }
 
-$installerName = 'CutData-AI-Setup-0.1.0.exe'
+$installerName = 'CutData-AI-Setup-0.1.1.exe'
 Write-Host ("Built installer\{0}" -f $installerName)

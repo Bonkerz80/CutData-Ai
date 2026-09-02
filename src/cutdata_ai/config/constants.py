@@ -5,7 +5,7 @@ UI and service code.
 """
 
 APP_NAME = "CutData AI"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 PROMPT_VERSION = "2026-09-02.1"
 SCHEMA_VERSION = "1"
 DEFAULT_MODEL = "gpt-5.6-luna"

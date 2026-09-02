@@ -1,5 +1,5 @@
 #define MyAppName "CutData AI"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #define MyAppPublisher "CutData AI"
 #define MyAppURL "https://github.com/Bonkerz80/CutData-AI"
 #define MyAppExeName "CutData AI.exe"
@@ -17,6 +17,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+MinVersion=10.0.17763
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=installer
@@ -38,6 +39,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "dist\CutData AI\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [InstallDelete]
+; Remove incompatible libraries shipped by 0.1.0; these are Windows components.
+Type: files; Name: "{app}\_internal\icu*.dll"
+Type: files; Name: "{app}\_internal\api-ms-win-*.dll"
+Type: files; Name: "{app}\_internal\ucrtbase.dll"
+Type: files; Name: "{app}\icu*.dll"
+Type: files; Name: "{app}\api-ms-win-*.dll"
+Type: files; Name: "{app}\ucrtbase.dll"
 Type: filesandordirs; Name: "{app}\_internal\PySide6"
 Type: filesandordirs; Name: "{app}\_internal\shiboken6"
 Type: filesandordirs; Name: "{app}\PySide6"
