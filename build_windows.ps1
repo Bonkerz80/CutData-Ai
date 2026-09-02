@@ -1,3 +1,7 @@
+param(
+    [switch]$SkipDependencyInstall
+)
+
 $ErrorActionPreference = "Stop"
 
 # Build in an isolated environment so a different system Qt/PySide6 install
@@ -10,8 +14,10 @@ if (-not (Test-Path -LiteralPath $buildPython)) {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated build environment." }
 }
 
-& $buildPython -m pip install --disable-pip-version-check --upgrade -r requirements.txt
-if ($LASTEXITCODE -ne 0) { throw "Could not install the build dependencies." }
+if (-not $SkipDependencyInstall) {
+    & $buildPython -m pip install --disable-pip-version-check --upgrade -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { throw "Could not install the build dependencies." }
+}
 
 & $buildPython -m PyInstaller --noconfirm --clean "CutData AI.spec"
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }

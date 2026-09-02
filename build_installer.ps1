@@ -15,7 +15,11 @@ if (-not $iscc) {
 
 $appExe = Join-Path $projectRoot 'dist\CutData AI\CutData AI.exe'
 if (-not (Test-Path -LiteralPath $appExe)) {
-    & (Join-Path $projectRoot 'build_windows.ps1')
+    $buildArguments = @()
+    if (Test-Path -LiteralPath (Join-Path $projectRoot '.venv-build\Scripts\python.exe')) {
+        $buildArguments = @('-SkipDependencyInstall')
+    }
+    & (Join-Path $projectRoot 'build_windows.ps1') @buildArguments
     if ($LASTEXITCODE -ne 0) {
         throw 'The application build failed.'
     }

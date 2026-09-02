@@ -37,6 +37,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "dist\CutData AI\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal\PySide6"
+Type: filesandordirs; Name: "{app}\_internal\shiboken6"
+Type: filesandordirs; Name: "{app}\PySide6"
+Type: filesandordirs; Name: "{app}\shiboken6"
+Type: files; Name: "{app}\Qt6*.dll"
+Type: files; Name: "{app}\pyside6.abi3.dll"
+Type: files; Name: "{app}\shiboken6.abi3.dll"
+
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
