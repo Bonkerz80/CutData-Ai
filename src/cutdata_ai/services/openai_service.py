@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Any
 
-from ..config.constants import DEFAULT_MODEL
+from ..config.constants import DEFAULT_MODEL, model_display_name
 from ..models.domain import MachiningRequest, MachineProfile
 from ..models.schema import StructuredResponseError
 from ..prompts.machining import SYSTEM_PROMPT, build_user_prompt, schema_for_openai
@@ -16,6 +16,55 @@ from ..prompts.machining import SYSTEM_PROMPT, build_user_prompt, schema_for_ope
 
 class OpenAIServiceError(RuntimeError):
     """An API or response transport error suitable for display in the UI."""
+
+
+@dataclass(frozen=True)
+class ConnectionTestResult:
+    """A user-facing connection result with optional non-secret diagnostics."""
+
+    success: bool
+    category: str
+    message: str
+    technical_detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """Alias that reads naturally at call sites and in tests."""
+
+        return self.success
+
+
+def _exception_status_code(exc: Exception) -> int | None:
+    value = getattr(exc, "status_code", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def connection_result_for_exception(exc: Exception, model: str) -> ConnectionTestResult:
+    """Map SDK failures to clean messages without echoing exception details."""
+
+    status_code = _exception_status_code(exc)
+    name = type(exc).__name__.casefold()
+    if status_code == 401 or any(token in name for token in ("authentication", "unauthorized")):
+        category = "authentication"
+        message = "Authentication failed\nCheck your OpenAI API key."
+    elif status_code in {400, 403, 404} or any(
+        token in name for token in ("permission", "notfound", "model")
+    ):
+        category = "model_unavailable"
+        message = (
+            "Model unavailable\n"
+            f"The API key works, but {model_display_name(model)} is not available to this account."
+        )
+    else:
+        category = "network"
+        message = "Network error\nUnable to reach OpenAI."
+    detail = type(exc).__name__
+    if status_code is not None:
+        detail += f" (HTTP {status_code})"
+    return ConnectionTestResult(False, category, message, detail)
 
 
 @dataclass
@@ -99,6 +148,34 @@ class OpenAIService:
                 raise OpenAIServiceError("The OpenAI package is not installed") from exc
             self.client = OpenAI(api_key=api_key, timeout=90.0, max_retries=2)
 
+    def test_connection(self) -> ConnectionTestResult:
+        """Verify key authentication and selected-model access with no tokens.
+
+        The Models retrieve endpoint is preferred because it does not create a
+        response or consume model output tokens.  The tiny Responses fallback
+        keeps this compatible with minimal test doubles and older SDK clients.
+        """
+
+        try:
+            models = getattr(self.client, "models", None)
+            retrieve = getattr(models, "retrieve", None)
+            if callable(retrieve):
+                retrieve(self.model)
+            else:
+                self.client.responses.create(
+                    model=self.model,
+                    input="OK",
+                    reasoning={"effort": "low"},
+                    max_output_tokens=1,
+                )
+        except Exception as exc:
+            return connection_result_for_exception(exc, self.model)
+        return ConnectionTestResult(
+            True,
+            "success",
+            f"Connection successful\n{model_display_name(self.model)} is available.",
+        )
+
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> ServiceResponse:
         prompt = build_user_prompt(request, machine)
         try:
@@ -149,6 +226,13 @@ class UnavailableOpenAIService:
 
     def __init__(self, model: str = DEFAULT_MODEL):
         self.model = model
+
+    def test_connection(self) -> ConnectionTestResult:
+        return ConnectionTestResult(
+            False,
+            "no_key",
+            "No API key configured\nEnter a key or set OPENAI_API_KEY in Settings.",
+        )
 
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> ServiceResponse:
         raise OpenAIServiceError("No API key is configured. Open Settings or enable development/mock mode.")
@@ -233,6 +317,13 @@ class MockOpenAIService:
     def __init__(self, model: str = DEFAULT_MODEL, reasoning_effort: str = "medium"):
         self.model = model
         self.reasoning_effort = reasoning_effort
+
+    def test_connection(self) -> ConnectionTestResult:
+        return ConnectionTestResult(
+            False,
+            "mock",
+            "Mock mode is active\nSwitch to LIVE AI MODE to test the OpenAI connection.",
+        )
 
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> ServiceResponse:
         family = request.tool_type

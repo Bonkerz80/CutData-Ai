@@ -36,5 +36,5 @@ if ($LASTEXITCODE -ne 0) {
     throw 'The Inno Setup installer build failed.'
 }
 
-$installerName = 'CutData-AI-Setup-0.1.1.exe'
+$installerName = 'CutData-AI-Setup-0.1.2.exe'
 Write-Host ("Built installer\{0}" -f $installerName)

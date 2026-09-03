@@ -5,11 +5,17 @@ UI and service code.
 """
 
 APP_NAME = "CutData AI"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 PROMPT_VERSION = "2026-09-02.1"
 SCHEMA_VERSION = "1"
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "medium"
+
+MODEL_DISPLAY_NAMES = {
+    "gpt-5.6-luna": "GPT-5.6 Luna",
+    "gpt-5.6-terra": "GPT-5.6 Terra",
+    "gpt-5.6-sol": "GPT-5.6 Sol",
+}
 
 SUPPORTED_MODELS = (
     "gpt-5.6-luna",
@@ -137,3 +143,9 @@ def tool_family(tool_type: str) -> str:
     """Return the service/UI family for a tool label."""
 
     return TOOL_FAMILY_BY_TYPE.get(tool_type, "end_mill")
+
+
+def model_display_name(model: str) -> str:
+    """Return a workshop-friendly model name without changing the API value."""
+
+    return MODEL_DISPLAY_NAMES.get(model, model)

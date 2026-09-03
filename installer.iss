@@ -1,5 +1,5 @@
 #define MyAppName "CutData AI"
-#define MyAppVersion "0.1.1"
+#define MyAppVersion "0.1.2"
 #define MyAppPublisher "CutData AI"
 #define MyAppURL "https://github.com/Bonkerz80/CutData-AI"
 #define MyAppExeName "CutData AI.exe"

@@ -38,6 +38,7 @@ from ..config.constants import (
     MATERIALS,
     TOOL_TYPES,
     TOOL_FAMILY_BY_TYPE,
+    model_display_name,
     tool_family,
 )
 from ..config.settings import AppSettings
@@ -45,7 +46,12 @@ from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import result_from_json
 from ..services.calculation_service import CalculationInputError, CalculationService, validate_and_correct_result
-from ..services.openai_service import MockOpenAIService, OpenAIService, UnavailableOpenAIService
+from ..services.openai_service import (
+    ConnectionTestResult,
+    MockOpenAIService,
+    OpenAIService,
+    UnavailableOpenAIService,
+)
 from ..services.settings_service import SettingsService
 from .dialogs import SettingsDialog
 from .widgets import DrillPage, EndMillPage, FieldPage, IndexablePage, ReamerPage, TapPage, combo, double_spin
@@ -91,6 +97,8 @@ class MainWindow(QMainWindow):
         self._current_outcome: CalculationOutcome | None = None
         self._original_result: MachiningResult | None = None
         self._debug_visible = False
+        self._api_error = False
+        self.ai_service = None
 
         self.setWindowTitle(f"{APP_NAME} — CNC speeds and feeds")
         self.setMinimumSize(1180, 760)
@@ -99,6 +107,7 @@ class MainWindow(QMainWindow):
         self._load_recent()
         self._update_material_fields()
         self._update_tool_page()
+        self._reload_ai_service()
         self._update_status()
 
     # UI construction -----------------------------------------------------
@@ -125,6 +134,11 @@ class MainWindow(QMainWindow):
         settings_button.clicked.connect(self._open_settings)
         header.addWidget(settings_button)
         root.addLayout(header)
+        self.api_status_notice = QLabel()
+        self.api_status_notice.setObjectName("apiStatusNotice")
+        self.api_status_notice.setWordWrap(True)
+        self.api_status_notice.setVisible(False)
+        root.addWidget(self.api_status_notice)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -536,7 +550,7 @@ class MainWindow(QMainWindow):
             return
         try:
             request = self._collect_request()
-            ai_service = self._make_ai_service()
+            ai_service = self.ai_service or self._reload_ai_service()
         except Exception as exc:
             self._show_error(str(exc))
             return
@@ -574,14 +588,19 @@ class MainWindow(QMainWindow):
     def _calculation_finished(self, outcome: CalculationOutcome) -> None:
         self._show_result(outcome)
         self.result_status.setText("Calculation ready")
+        self._api_error = False
         self._load_recent()
         self._set_calculating(False)
+        self._update_status()
 
     @Slot(str)
     def _calculation_failed(self, message: str) -> None:
         self._show_error(message)
         self.result_status.setText("Calculation could not be completed")
+        if not self.settings.mock_mode and self.settings_service.get_api_key_source() != "none":
+            self._api_error = True
         self._set_calculating(False)
+        self._update_status()
 
     def _calculation_thread_finished(self) -> None:
         if self._thread:
@@ -716,23 +735,53 @@ class MainWindow(QMainWindow):
 
     # Settings and helpers -------------------------------------------------
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.database, self.settings, self)
+        dialog = SettingsDialog(self.database, replace(self.settings), self)
+        dialog.connection_test_finished.connect(self._connection_test_finished)
         if dialog.exec() == dialog.Accepted:
-            self.settings = self.settings_service.load()
-            self._refresh_machine_profiles()
-            self._update_status()
+            self._reload_settings()
+
+    def _reload_settings(self) -> None:
+        """Apply saved settings immediately, including the active AI service."""
+
+        self.settings = self.settings_service.load()
+        self._api_error = False
+        self._refresh_machine_profiles()
+        self._reload_ai_service()
+        self._update_status()
+
+    def _reload_ai_service(self):
+        """Build the current service once so settings changes take effect now."""
+
+        self.ai_service = self._make_ai_service()
+        return self.ai_service
+
+    @Slot(object)
+    def _connection_test_finished(self, result: ConnectionTestResult) -> None:
+        self._api_error = not result.success and result.category not in {"no_key", "mock"}
+        self._update_status()
 
     def _update_status(self) -> None:
         if self.settings.mock_mode:
-            text = "DEVELOPMENT MOCK MODE"
+            text = "MOCK MODE"
             self.status_badge.setObjectName("mockBadge")
-        elif self.settings_service.get_api_key():
-            text = f"AI READY · {self.settings.model}"
-            self.status_badge.setObjectName("readyBadge")
-        else:
-            text = "API KEY NEEDED"
+            tooltip = "Development/mock mode is active. Results are not production data and are not cached."
+        elif self._api_error:
+            text = "API ERROR"
             self.status_badge.setObjectName("warningBadge")
+            tooltip = "The last OpenAI operation failed. Open Settings to test the connection."
+        elif self.settings_service.get_api_key_source() != "none":
+            text = f"LIVE AI · {model_display_name(self.settings.model)}"
+            self.status_badge.setObjectName("readyBadge")
+            tooltip = "Live OpenAI mode is active. The selected model can be changed in Settings."
+        else:
+            text = "NO API KEY"
+            self.status_badge.setObjectName("warningBadge")
+            tooltip = "LIVE AI MODE is selected, but no OpenAI API key is configured. Open Settings to add one or enable mock mode."
+        no_key = text == "NO API KEY"
         self.status_badge.setText(text)
+        self.status_badge.setToolTip(tooltip)
+        self.api_status_notice.setText("LIVE AI MODE — No OpenAI API key configured. Open Settings to add one or enable mock mode.")
+        self.api_status_notice.setVisible(no_key)
         self.status_badge.style().unpolish(self.status_badge)
         self.status_badge.style().polish(self.status_badge)
 
@@ -768,6 +817,16 @@ def apply_styles(app: QApplication) -> None:
         QLabel#readyBadge { background: #d9f1e4; color: #17643a; }
         QLabel#mockBadge { background: #fff0bd; color: #765b00; }
         QLabel#warningBadge { background: #fde0d8; color: #8a2d1d; }
+        QLabel#apiStatusNotice { background: #fff0bd; color: #765b00; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
+        QPushButton#modeSwitch { background: #fff0bd; color: #765b00; border: 1px solid #e2b94e; border-radius: 6px; font-weight: 700; }
+        QPushButton#modeSwitch:checked { background: #fff0bd; color: #765b00; }
+        QPushButton#modeSwitch:!checked { background: #d9f1e4; color: #17643a; border-color: #8bc6a2; }
+        QPushButton#modeSwitch:hover { border: 2px solid #1d6f86; }
+        QPushButton#secondaryAction { background: #1d6f86; color: white; font-weight: 700; }
+        QLabel#statusLabel, QLabel#statusValue { color: #17212b; }
+        QLabel#statusValue { font-weight: 600; }
+        QLabel#connectionSuccess { color: #17643a; font-weight: 700; }
+        QLabel#connectionWarning { color: #8a2d1d; font-weight: 700; }
         QLabel#resultStatus { color: #4c5965; font-size: 11pt; }
         QLabel#resultBanner { background: #e1f0f5; color: #205a6e; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
         QLabel#errorBanner { background: #fde0d8; color: #8a2d1d; padding: 8px 12px; border-radius: 5px; font-weight: 600; }

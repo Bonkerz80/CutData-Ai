@@ -23,7 +23,7 @@ py -3 -m pip install -r requirements.txt
 py -3 -m src.main
 ```
 
-If no API key is configured, the application opens in clearly labelled development/mock mode. Mock results are useful for exercising the complete interface but are never written to the production cache.
+If no API key is configured on first run, the application opens in clearly labelled development/mock mode. The Settings switch lets you choose MOCK MODE ON or LIVE AI MODE without restarting. Mock results are useful for exercising the complete interface but are never written to the production cache.
 
 ## OpenAI configuration
 
@@ -36,9 +36,9 @@ $env:OPENAI_API_KEY = "your-key"
 py -3 -m src.main
 ```
 
-Or enter the key in Settings. On Windows, the locally saved key is protected with Windows DPAPI. The key is never included in prompts, debug output, source code, or cache records.
+Or enter the key in Settings. On Windows, the locally saved key is protected with Windows DPAPI. Settings reports saved-key and environment-key status separately, with `OPENAI_API_KEY` taking priority. The key is never included in prompts, debug output, source code, or cache records.
 
-Turn off development/mock mode in Settings when using the API. The integration uses the official OpenAI Python SDK Responses API and a strict JSON schema; it does not scrape conversational text.
+Use TEST CONNECTION in Settings to verify authentication and access to the selected model. It uses the model lookup endpoint when available, so it does not consume response tokens or write to the machining cache. The calculation integration uses the official OpenAI Python SDK Responses API and a strict JSON schema; it does not scrape conversational text.
 
 ## Data and caching
 
@@ -66,7 +66,7 @@ Double-click a recent calculation to reopen its inputs and result. Mock calculat
 py -3 -m pytest -q
 ```
 
-Tests use fake services and never spend API credits. They cover numeric normalisation, all core arithmetic relationships, RPM limits, malformed responses, cache persistence and invalidation, mock-mode isolation, and workshop-setting precedence.
+Tests use fake services and never spend API credits. They cover numeric normalisation, all core arithmetic relationships, RPM limits, malformed responses, cache persistence and invalidation, mock-mode isolation, workshop-setting precedence, API-key source priority, settings persistence, UI status, asynchronous connection testing, and connection-test cache isolation.
 
 ## Windows executable
 
@@ -86,9 +86,9 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.1.1.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.1.2.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
-Version 0.1.1 fixes the `ucnv_open` / `QtWidgets` startup failure by removing an incompatible ICU DLL bundled in 0.1.0. Install 0.1.1 over the existing installation to remove the obsolete files automatically. Windows 10 1809 or later (64-bit), or Windows 11, is required.
+Version 0.1.2 adds a clear mock/live mode switch, separate saved/environment API-key status, and a non-blocking TEST CONNECTION check. It also retains the 0.1.1 fix for the `ucnv_open` / `QtWidgets` startup failure by removing an incompatible ICU DLL bundled in 0.1.0. Windows 10 1809 or later (64-bit), or Windows 11, is required.
 
 Builds isolate native dependency discovery from developer tools on PATH. Qt uses the Windows ICU library; copying another application's `icuuc.dll` into the application directory will break its ABI. Before an installer is compiled, the release gate checks every ICU function imported by Qt against Windows. The following additional check starts the actual packaged window with a clean environment and verifies the loaded ICU path:
 

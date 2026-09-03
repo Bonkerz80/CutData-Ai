@@ -2,6 +2,7 @@ import json
 
 from src.cutdata_ai.models.domain import MachiningRequest, MachineProfile
 from src.cutdata_ai.models.schema import MACHINING_RESULT_SCHEMA
+from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.openai_service import OpenAIService
 
 
@@ -34,3 +35,66 @@ def test_responses_api_uses_strict_json_schema_and_reasoning():
     assert format_spec["strict"] is True
     assert format_spec["schema"] == MACHINING_RESULT_SCHEMA
 
+
+def test_connection_test_retrieves_selected_model_without_creating_response():
+    class FakeModels:
+        def __init__(self):
+            self.requested = None
+
+        def retrieve(self, model):
+            self.requested = model
+            return {"id": model}
+
+    class ConnectionClient:
+        def __init__(self):
+            self.models = FakeModels()
+            self.responses = FakeResponses()
+
+    client = ConnectionClient()
+    result = OpenAIService("test-key", "gpt-5.6-luna", client=client).test_connection()
+
+    assert result.success is True
+    assert result.category == "success"
+    assert "GPT-5.6 Luna" in result.message
+    assert client.models.requested == "gpt-5.6-luna"
+    assert client.responses.kwargs is None
+
+
+def test_connection_test_fallback_is_a_minimal_non_machining_request():
+    client = FakeClient()
+    result = OpenAIService("test-key", "gpt-5.6-luna", client=client).test_connection()
+
+    assert result.success is True
+    assert client.responses.kwargs["model"] == "gpt-5.6-luna"
+    assert client.responses.kwargs["input"] == "OK"
+    assert client.responses.kwargs["max_output_tokens"] == 1
+
+
+def test_connection_authentication_failure_is_clean():
+    class AuthenticationFailure(Exception):
+        status_code = 401
+
+    class FailingModels:
+        def retrieve(self, model):
+            raise AuthenticationFailure("secret-token-must-not-be-shown")
+
+    class ConnectionClient:
+        models = FailingModels()
+
+    result = OpenAIService("test-key", "gpt-5.6-luna", client=ConnectionClient()).test_connection()
+
+    assert result.success is False
+    assert result.category == "authentication"
+    assert result.message == "Authentication failed\nCheck your OpenAI API key."
+    assert "secret-token" not in result.message
+
+
+def test_connection_test_does_not_write_to_machining_cache(tmp_path):
+    database = Database(tmp_path / "connection.sqlite3")
+    client = FakeClient()
+    result = OpenAIService("test-key", "gpt-5.6-luna", client=client).test_connection()
+
+    assert result.success is True
+    assert database.recent() == []
+    with database.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM cache_records").fetchone()[0] == 0

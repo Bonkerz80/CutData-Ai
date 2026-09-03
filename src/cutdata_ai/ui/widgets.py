@@ -54,6 +54,25 @@ def integer_spin(value: int = 0, maximum: int = 100) -> QSpinBox:
     return widget
 
 
+class ModeSwitch(QPushButton):
+    """A prominent, keyboard-friendly switch for mock versus live mode."""
+
+    def __init__(self, mock_mode: bool = False, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("modeSwitch")
+        self.setCheckable(True)
+        self.setMinimumHeight(36)
+        self.setMinimumWidth(160)
+        self.setAccessibleName("Development / mock mode")
+        self.setToolTip("When enabled, calculations use offline development data and are never cached.")
+        self.toggled.connect(self._update_label)
+        self.setChecked(mock_mode)
+        self._update_label(mock_mode)
+
+    def _update_label(self, mock_mode: bool) -> None:
+        self.setText("MOCK MODE ON" if mock_mode else "LIVE AI MODE")
+
+
 class FieldPage(QWidget):
     """Form page that exposes its values as a plain dictionary."""
 
