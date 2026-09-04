@@ -4,12 +4,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.openai_service import MockOpenAIService, OpenAIService
 from src.cutdata_ai.services.settings_service import SecretStore, SettingsService
-from src.cutdata_ai.config.constants import COMPANY_NAME, ICON_SVG_PATH
+from src.cutdata_ai.config.constants import APP_VERSION, COMPANY_NAME, ICON_SVG_PATH, PRODUCT_TAGLINE
 from src.cutdata_ai.services.normalization import normalize_request, request_hash
 from src.cutdata_ai.ui.dialogs import AboutDialog, ConnectionTestWorker, SettingsDialog
 from src.cutdata_ai.ui.main_window import MainWindow, normalise_window_state
@@ -120,6 +120,23 @@ def test_live_mode_without_key_stays_live_and_shows_settings_route(qapp, tmp_pat
         close_widget(window, qapp)
 
 
+def test_main_window_uses_the_official_ppt_header_hierarchy(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / "header.sqlite3")
+    window = MainWindow(database)
+
+    try:
+        assert window.header_frame.objectName() == "brandHeader"
+        assert window.header_frame.height() == 88
+        assert window.ppt_brand_block.objectName() == "pptBrandBlock"
+        assert window.header_product.text() == "CutData AI"
+        assert window.header_tagline.text() == PRODUCT_TAGLINE
+        assert window.about_button.objectName() == "headerButton"
+        assert window.settings_button.objectName() == "headerButton"
+    finally:
+        close_widget(window, qapp)
+
+
 def test_settings_reload_rebuilds_active_service_without_restart(qapp, tmp_path, monkeypatch):
     fake_secret_store(monkeypatch)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -210,7 +227,8 @@ def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_p
         assert "PPT" in text
         assert "CutData AI" in dialog.windowTitle()
         assert COMPANY_NAME in text
-        assert "Version" in text
+        assert dialog.findChild(QLabel, "dialogIdentityVersion").text() == f"Version {APP_VERSION}"
+        assert dialog.findChild(QLabel, "dialogSubtitle").text() == PRODUCT_TAGLINE
         assert "LOCALAPPDATA" not in text
         assert "secret" not in text.casefold()
         assert not QIcon(str(ICON_SVG_PATH)).isNull()

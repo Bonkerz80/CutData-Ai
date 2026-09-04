@@ -4,27 +4,36 @@ The product name lives here so branding can be changed without searching the
 UI and service code.
 """
 
-from pathlib import Path
+from .branding import (
+    APP_NAME,
+    ASSET_DIR,
+    BRAND_GRAPHITE,
+    BRAND_INK,
+    BRAND_RED,
+    COMPANY_NAME,
+    COMPANY_WEBSITE,
+    ICON_ICO_PATH,
+    ICON_PNG_PATH,
+    ICON_SVG_PATH,
+    PPT_ASSET_DIR,
+    PPT_FULL_LOGO_WHITE_PATH,
+    PPT_HORIZONTAL_LOGO_PATH,
+    PPT_LEGACY_ICON_PATH,
+    PPT_SYMBOL_PATH,
+    PRODUCT_DESCRIPTION,
+    PRODUCT_TAGLINE,
+    PUBLISHER_NAME,
+    REPOSITORY_URL,
+    branding_asset,
+    resource_path,
+)
 
 
-APP_NAME = "CutData AI"
-PUBLISHER_NAME = "PPT"
-COMPANY_NAME = "Precision Press Tools & Engineering Services Ltd"
-COMPANY_WEBSITE = "https://www.ppt-eng.co.uk/"
-BRAND_RED = "#CE1D1D"
-PRODUCT_TAGLINE = "AI-assisted CNC machining calculator"
-PRODUCT_DESCRIPTION = "AI-assisted CNC speeds & feeds calculator"
-REPOSITORY_URL = "https://github.com/Bonkerz80/CutData-Ai"
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 PROMPT_VERSION = "2026-09-03.2"
 SCHEMA_VERSION = "2"
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "medium"
-
-ASSET_DIR = Path(__file__).resolve().parent.parent / "assets"
-ICON_SVG_PATH = ASSET_DIR / "cutdata_ai.svg"
-ICON_PNG_PATH = ASSET_DIR / "cutdata_ai.png"
-ICON_ICO_PATH = ASSET_DIR / "cutdata_ai.ico"
 
 MODEL_DISPLAY_NAMES = {
     "gpt-5.6-luna": "GPT-5.6 Luna",

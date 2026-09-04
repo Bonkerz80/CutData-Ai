@@ -5,11 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QComboBox,
     QPushButton,
+    QScrollArea,
     QWidget,
 )
 
@@ -30,8 +32,10 @@ from ..config.constants import (
     COMPANY_WEBSITE,
     DEFAULT_MODEL,
     ICON_SVG_PATH,
+    PRODUCT_DESCRIPTION,
     PRODUCT_TAGLINE,
     PUBLISHER_NAME,
+    PPT_HORIZONTAL_LOGO_PATH,
     REPOSITORY_URL,
     SUPPORTED_MODELS,
     model_display_name,
@@ -72,6 +76,50 @@ class ConnectionTestWorker(QObject):
         self.cancelled = True
 
 
+def _dialog_brand_header(title: str, subtitle: str) -> QFrame:
+    """Build the shared dark PPT-branded header used by secondary dialogs."""
+
+    frame = QFrame()
+    frame.setObjectName("dialogBrandHeader")
+    frame.setMinimumHeight(82)
+    layout = QHBoxLayout(frame)
+    layout.setContentsMargins(10, 9, 14, 9)
+    layout.setSpacing(12)
+
+    logo_surface = QFrame()
+    logo_surface.setObjectName("dialogLogoSurface")
+    logo_surface.setFixedSize(142, 58)
+    logo_layout = QVBoxLayout(logo_surface)
+    logo_layout.setContentsMargins(7, 6, 7, 6)
+    logo = QLabel()
+    logo.setPixmap(
+        QPixmap(str(PPT_HORIZONTAL_LOGO_PATH)).scaled(
+            128, 46, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+    )
+    logo.setAlignment(Qt.AlignCenter)
+    logo.setAccessibleName(f"Official {PUBLISHER_NAME} logo")
+    logo_layout.addWidget(logo)
+    layout.addWidget(logo_surface)
+
+    copy = QVBoxLayout()
+    copy.setContentsMargins(0, 0, 0, 0)
+    copy.setSpacing(0)
+    kicker = QLabel(PUBLISHER_NAME)
+    kicker.setObjectName("dialogPublisher")
+    heading = QLabel(title)
+    heading.setObjectName("dialogTitle")
+    supporting = QLabel(subtitle)
+    supporting.setObjectName("dialogSubtitle")
+    supporting.setWordWrap(True)
+    copy.addWidget(kicker)
+    copy.addWidget(heading)
+    copy.addWidget(supporting)
+    copy.addStretch(1)
+    layout.addLayout(copy, 1)
+    return frame
+
+
 class AboutDialog(QDialog):
     """Show product, publisher, version, engine, and repository details."""
 
@@ -82,26 +130,29 @@ class AboutDialog(QDialog):
         self.setMinimumWidth(430)
 
         layout = QVBoxLayout(self)
-        brand_row = QHBoxLayout()
-        icon = QLabel()
-        icon.setPixmap(QIcon(str(ICON_SVG_PATH)).pixmap(68, 68))
-        icon.setAccessibleName(f"{PUBLISHER_NAME} mark")
-        brand_row.addWidget(icon)
-        brand_text = QVBoxLayout()
-        publisher = QLabel(PUBLISHER_NAME)
-        publisher.setObjectName("publisherBrand")
-        product = QLabel(APP_NAME)
-        product.setObjectName("appTitle")
-        brand_text.addWidget(publisher)
-        brand_text.addWidget(product)
-        brand_row.addLayout(brand_text)
-        brand_row.addStretch(1)
-        layout.addLayout(brand_row)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        layout.addWidget(_dialog_brand_header(APP_NAME, PRODUCT_TAGLINE))
+
+        identity = QFrame()
+        identity.setObjectName("dialogIdentityCard")
+        identity_layout = QVBoxLayout(identity)
+        identity_layout.setContentsMargins(14, 12, 14, 12)
+        identity_layout.setSpacing(2)
+        identity_publisher = QLabel(PUBLISHER_NAME)
+        identity_publisher.setObjectName("dialogIdentityPublisher")
+        identity_product = QLabel(APP_NAME)
+        identity_product.setObjectName("dialogIdentityProduct")
+        identity_version = QLabel(f"Version {APP_VERSION}")
+        identity_version.setObjectName("dialogIdentityVersion")
+        identity_layout.addWidget(identity_publisher)
+        identity_layout.addWidget(identity_product)
+        identity_layout.addWidget(identity_version)
+        layout.addWidget(identity)
 
         details = QLabel(
-            f"Version {APP_VERSION}<br>"
-            f"{PRODUCT_TAGLINE}<br><br>"
-            f"Developed by {PUBLISHER_NAME}<br>"
+            f"{PRODUCT_DESCRIPTION}<br><br>"
+            f"Developed by <b>{PUBLISHER_NAME}</b><br>"
             f"{COMPANY_NAME}<br>"
             f"Default engine: {model_display_name(DEFAULT_MODEL)}<br>"
             f'<a href="{COMPANY_WEBSITE}">{COMPANY_WEBSITE}</a><br>'
@@ -133,10 +184,28 @@ class SettingsDialog(QDialog):
         self._connection_thread: QThread | None = None
         self._connection_worker: ConnectionTestWorker | None = None
         self.setWindowTitle("Settings")
+        self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
         self.setMinimumSize(720, 650)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(_dialog_brand_header("Settings", "OpenAI engine and workshop limits"))
+
+        settings_scroll = QScrollArea()
+        settings_scroll.setObjectName("settingsScroll")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setFrameShape(QFrame.NoFrame)
+        settings_content = QWidget()
+        settings_content.setObjectName("settingsContent")
+        settings_content_layout = QVBoxLayout(settings_content)
+        settings_content_layout.setContentsMargins(0, 0, 0, 0)
+        settings_content_layout.setSpacing(10)
+        settings_scroll.setWidget(settings_content)
+        layout.addWidget(settings_scroll, 1)
+
         api_group = QGroupBox("OpenAI")
+        api_group.setObjectName("dialogPrimaryGroup")
         api_layout = QVBoxLayout(api_group)
 
         mode_heading = QLabel("DEVELOPMENT / MOCK MODE")
@@ -214,9 +283,10 @@ class SettingsDialog(QDialog):
         api_layout.addWidget(self.connection_status)
         self.api_key.textChanged.connect(self._key_edited)
         self._refresh_api_status()
-        layout.addWidget(api_group)
+        settings_content_layout.addWidget(api_group)
 
         machine_group = QGroupBox("Machine profiles")
+        machine_group.setObjectName("dialogSecondaryGroup")
         machine_layout = QVBoxLayout(machine_group)
         machine_layout.addWidget(QLabel("Edit limits used for local sanity checks. The HAAS VF-9 starts at 10,000 RPM."))
         self.profile_table = QTableWidget(0, 4)
@@ -225,11 +295,12 @@ class SettingsDialog(QDialog):
         self.profile_table.setAlternatingRowColors(True)
         self._populate_profiles()
         machine_layout.addWidget(self.profile_table)
-        layout.addWidget(machine_group, 1)
+        settings_content_layout.addWidget(machine_group)
 
         data_label = QLabel(f"Local data: {Path(database.path)}")
         data_label.setObjectName("hint")
-        layout.addWidget(data_label)
+        settings_content_layout.addWidget(data_label)
+        settings_content_layout.addStretch(1)
 
         self.dialog_buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.dialog_buttons.button(QDialogButtonBox.Save).setText("SAVE SETTINGS")

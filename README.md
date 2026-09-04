@@ -2,7 +2,7 @@
 
 CutData AI is a native-feeling Windows workshop calculator for CNC speeds and feeds. It collects the important machining inputs, asks the selected OpenAI model for a structured recommendation, checks the arithmetic locally, and presents the useful values as a calculator result rather than a chat transcript.
 
-PPT is the publisher brand: **Precision Press Tools & Engineering Services Ltd**. CutData AI is the product. The application keeps the red/black PPT target identity visible in the header, About dialog, Windows executable, taskbar identity, installer, Start Menu shortcut, and desktop shortcut.
+PPT is the publisher brand: **Precision Press Tools & Engineering Services Ltd**. CutData AI is the product. The application uses the official red/black PPT target and wordmark in a full-width branded header, About/Settings dialogs, Windows executable, taskbar identity, installer, Start Menu shortcut, and desktop shortcut.
 
 The first working version includes complete workflows for:
 
@@ -99,9 +99,9 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.1.4.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the PPT-branded product icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.1.5.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the PPT-branded product icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
-Version 0.1.4 keeps the OpenAI setup improvements from 0.1.2 and the architecture corrections from 0.1.3: live machining recommendations come from the selected AI model, while local code only validates deterministic arithmetic and hard machine limits. It adds PPT/CutData AI branding, a packaged multi-size Windows icon, complete calculator-state persistence, screen-safe window restoration, derived result information, and optional structured AI context fields. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. It also retains the 0.1.1 `ucnv_open` / `QtWidgets` startup fix. Windows 10 1809 or later (64-bit), or Windows 11, is required.
+Version 0.1.5 keeps the OpenAI setup improvements from 0.1.2 and the architecture corrections from 0.1.3: live machining recommendations come from the selected AI model, while local code only validates deterministic arithmetic and hard machine limits. It adds a substantially stronger PPT/CutData AI visual system using the official legacy artwork, a full-width engineering header, red accent hierarchy, branded dialogs, a packaged multi-size Windows icon, complete calculator-state persistence, screen-safe window restoration, derived result information, and optional structured AI context fields. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. It also retains the 0.1.1 `ucnv_open` / `QtWidgets` startup fix. Windows 10 1809 or later (64-bit), or Windows 11, is required.
 
 Builds isolate native dependency discovery from developer tools on PATH. Qt uses the Windows ICU library; copying another application's `icuuc.dll` into the application directory will break its ABI. Before an installer is compiled, the release gate checks every ICU function imported by Qt against Windows. The following additional check starts the actual packaged window with a clean environment and verifies the loaded ICU path:
 

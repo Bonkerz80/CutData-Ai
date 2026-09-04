@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Any
 
 from PySide6.QtCore import QObject, QRect, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QFont, QGuiApplication, QIcon
+from PySide6.QtGui import QFont, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -35,10 +35,13 @@ from PySide6.QtWidgets import (
 
 from ..config.constants import (
     APP_NAME,
+    APP_VERSION,
+    COMPANY_NAME,
     ICON_SVG_PATH,
     MATERIALS,
     PRODUCT_TAGLINE,
     PUBLISHER_NAME,
+    PPT_HORIZONTAL_LOGO_PATH,
     SUPPORTED_MODELS,
     TOOL_TYPES,
     TOOL_FAMILY_BY_TYPE,
@@ -133,7 +136,7 @@ class MainWindow(QMainWindow):
         self._api_error = False
         self.ai_service = None
 
-        self.setWindowTitle(f"{APP_NAME} — CNC speeds and feeds")
+        self.setWindowTitle(f"{PUBLISHER_NAME} {APP_NAME} {APP_VERSION} — CNC Machining Calculator")
         self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
         self.setMinimumSize(1180, 760)
         self.resize(1450, 900)
@@ -151,37 +154,80 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         root = QVBoxLayout(central)
-        root.setContentsMargins(18, 14, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(14, 12, 14, 16)
+        root.setSpacing(10)
 
-        header = QHBoxLayout()
-        brand_icon = QLabel()
-        brand_icon.setObjectName("brandIcon")
-        brand_icon.setPixmap(QIcon(str(ICON_SVG_PATH)).pixmap(48, 48))
-        brand_icon.setAccessibleName(f"{PUBLISHER_NAME} mark")
-        header.addWidget(brand_icon)
-        title_box = QVBoxLayout()
-        publisher = QLabel(PUBLISHER_NAME)
-        publisher.setObjectName("publisherBrand")
+        header_frame = QFrame()
+        header_frame.setObjectName("brandHeader")
+        header_frame.setFixedHeight(88)
+        header = QHBoxLayout(header_frame)
+        header.setContentsMargins(12, 8, 12, 8)
+        header.setSpacing(14)
+
+        ppt_block = QFrame()
+        ppt_block.setObjectName("pptBrandBlock")
+        ppt_block.setMinimumWidth(340)
+        ppt_block.setMaximumWidth(360)
+        ppt_layout = QHBoxLayout(ppt_block)
+        ppt_layout.setContentsMargins(8, 6, 12, 6)
+        ppt_layout.setSpacing(10)
+        logo_surface = QFrame()
+        logo_surface.setObjectName("pptLogoSurface")
+        logo_surface.setFixedSize(148, 60)
+        logo_layout = QVBoxLayout(logo_surface)
+        logo_layout.setContentsMargins(7, 6, 7, 6)
+        logo = QLabel()
+        logo.setPixmap(
+            QPixmap(str(PPT_HORIZONTAL_LOGO_PATH)).scaled(
+                134, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        )
+        logo.setAlignment(Qt.AlignCenter)
+        logo.setAccessibleName(f"Official {PUBLISHER_NAME} logo")
+        logo_layout.addWidget(logo)
+        ppt_layout.addWidget(logo_surface)
+        company = QLabel(COMPANY_NAME.replace(" & ", "\n& "))
+        company.setObjectName("pptCompanyName")
+        company.setWordWrap(True)
+        company.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        ppt_layout.addWidget(company, 1)
+        self.ppt_brand_block = ppt_block
+        header.addWidget(ppt_block)
+
+        product_box = QVBoxLayout()
+        product_box.setContentsMargins(2, 0, 0, 0)
+        product_box.setSpacing(1)
         title = QLabel(APP_NAME)
-        title.setObjectName("appTitle")
+        title.setObjectName("headerProduct")
         subtitle = QLabel(PRODUCT_TAGLINE)
-        subtitle.setObjectName("subtitle")
-        title_box.addWidget(publisher)
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
+        subtitle.setObjectName("headerTagline")
+        product_box.addStretch(1)
+        product_box.addWidget(title)
+        product_box.addWidget(subtitle)
+        product_box.addStretch(1)
+        self.header_product = title
+        self.header_tagline = subtitle
+        header.addLayout(product_box, 1)
         header.addStretch(1)
         self.status_badge = QLabel()
         self.status_badge.setObjectName("statusBadge")
         header.addWidget(self.status_badge)
         about_button = QPushButton("About")
+        about_button.setObjectName("headerButton")
         about_button.clicked.connect(self._open_about)
+        self.about_button = about_button
         header.addWidget(about_button)
         settings_button = QPushButton("Settings")
+        settings_button.setObjectName("headerButton")
         settings_button.clicked.connect(self._open_settings)
+        self.settings_button = settings_button
         header.addWidget(settings_button)
-        root.addLayout(header)
+        self.header_frame = header_frame
+        root.addWidget(header_frame)
+        brand_rule = QFrame()
+        brand_rule.setObjectName("brandRule")
+        brand_rule.setFixedHeight(3)
+        root.addWidget(brand_rule)
         self.api_status_notice = QLabel()
         self.api_status_notice.setObjectName("apiStatusNotice")
         self.api_status_notice.setWordWrap(True)
@@ -206,6 +252,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(10)
 
         workflow = QGroupBox("Calculation setup")
+        workflow.setObjectName("setupGroup")
         form = QFormLayout(workflow)
         form.setContentsMargins(14, 14, 14, 14)
         form.setVerticalSpacing(10)
@@ -264,6 +311,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(page_scroll, 1)
 
         recent_group = QGroupBox("Recent calculations")
+        recent_group.setObjectName("recentGroup")
         recent_layout = QVBoxLayout(recent_group)
         recent_layout.setContentsMargins(10, 10, 10, 10)
         self.recent_list = QListWidget()
@@ -302,6 +350,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.result_banner)
 
         key_group = QGroupBox("Primary AI recommendation")
+        key_group.setObjectName("primaryGroup")
         key_layout = QGridLayout(key_group)
         key_layout.setContentsMargins(14, 14, 14, 14)
         key_layout.setHorizontalSpacing(12)
@@ -337,6 +386,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(key_group)
 
         info_group = QGroupBox("Secondary information")
+        info_group.setObjectName("secondaryGroup")
         info_form = QFormLayout(info_group)
         info_form.setContentsMargins(14, 10, 14, 10)
         self.info_labels: dict[str, QLabel] = {}
@@ -356,6 +406,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(info_group)
 
         self.derived_group = QGroupBox("Derived data")
+        self.derived_group.setObjectName("secondaryGroup")
         derived_form = QFormLayout(self.derived_group)
         derived_form.setContentsMargins(14, 10, 14, 10)
         self.derived_labels: dict[str, QLabel] = {}
@@ -380,6 +431,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.derived_group)
 
         self.ai_context_group = QGroupBox("AI context / estimates")
+        self.ai_context_group.setObjectName("secondaryGroup")
         ai_context_form = QFormLayout(self.ai_context_group)
         ai_context_form.setContentsMargins(14, 10, 14, 10)
         self.ai_context_labels: dict[str, QLabel] = {}
@@ -402,6 +454,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.ai_context_group)
 
         notes_group = QGroupBox("Machining notes")
+        notes_group.setObjectName("secondaryGroup")
         notes_layout = QVBoxLayout(notes_group)
         self.notes = QPlainTextEdit()
         self.notes.setReadOnly(True)
@@ -427,6 +480,7 @@ class MainWindow(QMainWindow):
         outer.addLayout(buttons)
 
         self.debug_group = QGroupBox("Advanced / Debug")
+        self.debug_group.setObjectName("secondaryGroup")
         debug_layout = QVBoxLayout(self.debug_group)
         self.debug_tabs = QStackedWidget()
         self.debug_editors: dict[str, QPlainTextEdit] = {}
@@ -1114,7 +1168,7 @@ class MainWindow(QMainWindow):
             tooltip = "Development/mock mode is active. Results are not production data and are not cached."
         elif self._api_error:
             text = "API ERROR"
-            self.status_badge.setObjectName("warningBadge")
+            self.status_badge.setObjectName("errorBadge")
             tooltip = "The last OpenAI operation failed. Open Settings to test the connection."
         elif self.settings_service.get_api_key_source() != "none":
             text = f"LIVE AI · {model_display_name(self.settings.model)}"
@@ -1156,24 +1210,40 @@ def apply_styles(app: QApplication) -> None:
         """
         QWidget { font-family: 'Segoe UI'; font-size: 10pt; }
         QMainWindow, QDialog { background: #f3f5f7; }
-        QGroupBox { background: #ffffff; border: 1px solid #d5dbe1; border-radius: 8px; margin-top: 9px; padding-top: 9px; }
-        QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #4c5965; font-weight: 600; }
-        QFrame#inputPanel, QFrame#resultPanel { background: transparent; }
-        QLabel#appTitle { font-size: 22pt; font-weight: 700; color: #17212b; }
-        QLabel#publisherBrand { color: #CE1D1D; font-size: 9pt; font-weight: 800; letter-spacing: 2px; }
-        QLabel#brandIcon { background: transparent; }
-        QLabel#subtitle, QLabel#hint { color: #66727d; }
-        QLabel#formHeading { color: #2f6d84; font-size: 9pt; font-weight: 700; letter-spacing: 1px; padding-top: 5px; }
-        QLabel#statusBadge, QLabel#readyBadge, QLabel#mockBadge, QLabel#warningBadge { padding: 7px 12px; border-radius: 14px; font-weight: 700; }
+        QFrame#brandHeader { background: #1B2228; border: 1px solid #313b43; border-radius: 7px; }
+        QFrame#brandRule { background: #CE1D1D; border: none; }
+        QFrame#pptBrandBlock { background: #CE1D1D; border-radius: 5px; }
+        QFrame#pptLogoSurface { background: #ffffff; border-radius: 3px; }
+        QLabel#pptCompanyName { color: #ffffff; font-size: 8pt; font-weight: 700; letter-spacing: 0.5px; }
+        QLabel#headerProduct { color: #ffffff; font-size: 21pt; font-weight: 700; }
+        QLabel#headerTagline { color: #cbd2d7; font-size: 9pt; font-weight: 500; }
+        QFrame#dialogBrandHeader { background: #1B2228; border: 1px solid #313b43; border-radius: 6px; }
+        QFrame#dialogLogoSurface { background: #ffffff; border-radius: 3px; }
+        QLabel#dialogPublisher { color: #f4b2b2; font-size: 8pt; font-weight: 800; letter-spacing: 2px; }
+        QLabel#dialogTitle { color: #ffffff; font-size: 18pt; font-weight: 700; }
+        QLabel#dialogSubtitle { color: #cbd2d7; font-size: 9pt; }
+        QFrame#dialogIdentityCard { background: #ffffff; border: 1px solid #d7dde1; border-left: 4px solid #CE1D1D; border-radius: 5px; }
+        QLabel#dialogIdentityPublisher { color: #CE1D1D; font-size: 8pt; font-weight: 800; letter-spacing: 2px; }
+        QLabel#dialogIdentityProduct { color: #17212b; font-size: 16pt; font-weight: 700; }
+        QLabel#dialogIdentityVersion { color: #66727d; font-size: 9pt; font-weight: 600; }
+        QGroupBox#dialogPrimaryGroup { border-left: 4px solid #CE1D1D; }
+        QGroupBox#dialogSecondaryGroup { border-left: 2px solid #c8d0d5; }
+        QLabel#hint { color: #66727d; }
+        QLabel#formHeading { color: #CE1D1D; font-size: 9pt; font-weight: 800; letter-spacing: 1px; padding-top: 5px; }
+        QLabel#statusBadge, QLabel#readyBadge, QLabel#mockBadge, QLabel#warningBadge, QLabel#errorBadge { padding: 7px 12px; border-radius: 14px; font-weight: 700; }
         QLabel#readyBadge { background: #d9f1e4; color: #17643a; }
         QLabel#mockBadge { background: #fff0bd; color: #765b00; }
         QLabel#warningBadge { background: #fde0d8; color: #8a2d1d; }
+        QLabel#errorBadge { background: #b3261e; color: #ffffff; }
         QLabel#apiStatusNotice { background: #fff0bd; color: #765b00; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
         QPushButton#modeSwitch { background: #fff0bd; color: #765b00; border: 1px solid #e2b94e; border-radius: 6px; font-weight: 700; }
         QPushButton#modeSwitch:checked { background: #fff0bd; color: #765b00; }
         QPushButton#modeSwitch:!checked { background: #d9f1e4; color: #17643a; border-color: #8bc6a2; }
-        QPushButton#modeSwitch:hover { border: 2px solid #1d6f86; }
-        QPushButton#secondaryAction { background: #1d6f86; color: white; font-weight: 700; }
+        QPushButton#modeSwitch:hover { border: 2px solid #CE1D1D; }
+        QPushButton#headerButton { background: #2a333a; color: #ffffff; border: 1px solid #56616a; border-radius: 5px; font-weight: 700; padding: 4px 11px; }
+        QPushButton#headerButton:hover { background: #3a464f; border-color: #ffffff; }
+        QPushButton#secondaryAction { background: #2f3a43; color: white; font-weight: 700; }
+        QPushButton#secondaryAction:hover { background: #1B2228; border-color: #CE1D1D; }
         QLabel#statusLabel, QLabel#statusValue { color: #17212b; }
         QLabel#statusValue { font-weight: 600; }
         QLabel#connectionSuccess { color: #17643a; font-weight: 700; }
@@ -1181,14 +1251,21 @@ def apply_styles(app: QApplication) -> None:
         QLabel#resultStatus { color: #4c5965; font-size: 11pt; }
         QLabel#resultBanner { background: #e1f0f5; color: #205a6e; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
         QLabel#errorBanner { background: #fde0d8; color: #8a2d1d; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
-        QFrame#valueCard { background: #f8fafb; border: 1px solid #d8e0e5; border-radius: 7px; }
+        QFrame#inputPanel, QFrame#resultPanel { background: #ffffff; border: 1px solid #d7dde1; border-radius: 7px; }
+        QGroupBox { background: #ffffff; border: 1px solid #d5dbe1; border-left: 3px solid #CE1D1D; border-radius: 5px; margin-top: 9px; padding-top: 9px; }
+        QGroupBox#primaryGroup { border-left: 4px solid #CE1D1D; background: #fbfcfd; }
+        QGroupBox#secondaryGroup { border-left: 2px solid #c8d0d5; }
+        QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #26323a; font-weight: 700; }
+        QFrame#valueCard { background: #ffffff; border: 1px solid #d3dade; border-left: 4px solid #CE1D1D; border-radius: 5px; }
         QLabel#valueLabel { color: #51606b; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }
         QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: 30px; }
+        QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #CE1D1D; }
         QPushButton { min-height: 30px; padding: 3px 12px; }
-        QPushButton#calculateButton { background: #1d6f86; color: white; font-weight: 700; font-size: 12pt; border-radius: 6px; }
-        QPushButton#calculateButton:hover { background: #15566a; }
+        QPushButton#calculateButton { background: #CE1D1D; color: white; border: 1px solid #a91616; font-weight: 800; font-size: 12pt; border-radius: 5px; }
+        QPushButton#calculateButton:hover { background: #a91616; }
         QPlainTextEdit { background: #fbfcfd; border: 1px solid #d5dbe1; }
         QListWidget { border: 1px solid #d5dbe1; border-radius: 5px; }
+        QTabBar::tab:selected { color: #CE1D1D; border-bottom: 2px solid #CE1D1D; }
         QSplitter::handle { background: #d5dbe1; }
         """
     )
