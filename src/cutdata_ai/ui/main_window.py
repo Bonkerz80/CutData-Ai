@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QObject, QRect, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QFont, QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -34,8 +35,11 @@ from PySide6.QtWidgets import (
 
 from ..config.constants import (
     APP_NAME,
-    APP_VERSION,
+    ICON_SVG_PATH,
     MATERIALS,
+    PRODUCT_TAGLINE,
+    PUBLISHER_NAME,
+    SUPPORTED_MODELS,
     TOOL_TYPES,
     TOOL_FAMILY_BY_TYPE,
     model_display_name,
@@ -46,6 +50,14 @@ from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import result_from_json
 from ..services.calculation_service import CalculationInputError, CalculationService, validate_and_correct_result
+from ..services.derived_values import (
+    axial_doc_ratio,
+    hole_ld_ratio,
+    material_removal_rate_cm3_min,
+    radial_engagement_percent,
+    torque_from_power,
+    usage_percent,
+)
 from ..services.openai_service import (
     ConnectionTestResult,
     MockOpenAIService,
@@ -53,7 +65,7 @@ from ..services.openai_service import (
     UnavailableOpenAIService,
 )
 from ..services.settings_service import SettingsService
-from .dialogs import SettingsDialog
+from .dialogs import AboutDialog, SettingsDialog
 from .widgets import DrillPage, EndMillPage, FieldPage, IndexablePage, ReamerPage, TapPage, combo, double_spin
 
 
@@ -86,12 +98,33 @@ class CalculationWorker(QObject):
         self.cancelled = True
 
 
+def normalise_window_state(value: Any) -> dict[str, Any]:
+    """Keep persisted geometry usable across monitors and older versions."""
+
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("x", "y", "width", "height"):
+        try:
+            result[key] = int(value[key])
+        except (KeyError, TypeError, ValueError):
+            return {}
+    if result["width"] <= 0 or result["height"] <= 0:
+        return {}
+    maximized = value.get("maximized", False)
+    if isinstance(maximized, str):
+        maximized = maximized.strip().casefold() in {"1", "true", "yes", "on"}
+    result["maximized"] = bool(maximized)
+    return result
+
+
 class MainWindow(QMainWindow):
     def __init__(self, database: Database, parent=None):
         super().__init__(parent)
         self.database = database
         self.settings_service = SettingsService(database)
         self.settings = self.settings_service.load()
+        self._restoring_state = True
         self._thread: QThread | None = None
         self._worker: CalculationWorker | None = None
         self._current_outcome: CalculationOutcome | None = None
@@ -101,14 +134,18 @@ class MainWindow(QMainWindow):
         self.ai_service = None
 
         self.setWindowTitle(f"{APP_NAME} — CNC speeds and feeds")
+        self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
         self.setMinimumSize(1180, 760)
         self.resize(1450, 900)
         self._build_ui()
+        self._restore_calculator_state()
+        self._restore_window_state()
         self._load_recent()
         self._update_material_fields()
         self._update_tool_page()
         self._reload_ai_service()
         self._update_status()
+        self._restoring_state = False
 
     # UI construction -----------------------------------------------------
     def _build_ui(self) -> None:
@@ -118,11 +155,19 @@ class MainWindow(QMainWindow):
         root.setSpacing(12)
 
         header = QHBoxLayout()
+        brand_icon = QLabel()
+        brand_icon.setObjectName("brandIcon")
+        brand_icon.setPixmap(QIcon(str(ICON_SVG_PATH)).pixmap(48, 48))
+        brand_icon.setAccessibleName(f"{PUBLISHER_NAME} mark")
+        header.addWidget(brand_icon)
         title_box = QVBoxLayout()
+        publisher = QLabel(PUBLISHER_NAME)
+        publisher.setObjectName("publisherBrand")
         title = QLabel(APP_NAME)
         title.setObjectName("appTitle")
-        subtitle = QLabel("A practical CNC calculator with AI-assisted starting data")
+        subtitle = QLabel(PRODUCT_TAGLINE)
         subtitle.setObjectName("subtitle")
+        title_box.addWidget(publisher)
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
         header.addLayout(title_box)
@@ -130,6 +175,9 @@ class MainWindow(QMainWindow):
         self.status_badge = QLabel()
         self.status_badge.setObjectName("statusBadge")
         header.addWidget(self.status_badge)
+        about_button = QPushButton("About")
+        about_button.clicked.connect(self._open_about)
+        header.addWidget(about_button)
         settings_button = QPushButton("Settings")
         settings_button.clicked.connect(self._open_settings)
         header.addWidget(settings_button)
@@ -182,7 +230,7 @@ class MainWindow(QMainWindow):
         self.tool_combo = QComboBox()
         self.tool_combo.addItems(list(TOOL_TYPES))
         self.tool_combo.setCurrentText(self.settings.last_tool_type)
-        self.tool_combo.currentTextChanged.connect(self._update_tool_page)
+        self.tool_combo.currentTextChanged.connect(self._tool_changed)
         form.addRow("Tool", self.tool_combo)
 
         saved_row = QWidget()
@@ -253,7 +301,7 @@ class MainWindow(QMainWindow):
         self.result_banner.setVisible(False)
         outer.addWidget(self.result_banner)
 
-        key_group = QGroupBox("Recommended starting values")
+        key_group = QGroupBox("Primary AI recommendation")
         key_layout = QGridLayout(key_group)
         key_layout.setContentsMargins(14, 14, 14, 14)
         key_layout.setHorizontalSpacing(12)
@@ -306,6 +354,52 @@ class MainWindow(QMainWindow):
             self.info_labels[key] = value
             info_form.addRow(label, value)
         outer.addWidget(info_group)
+
+        self.derived_group = QGroupBox("Derived data")
+        derived_form = QFormLayout(self.derived_group)
+        derived_form.setContentsMargins(14, 10, 14, 10)
+        self.derived_labels: dict[str, QLabel] = {}
+        self.derived_rows: dict[str, tuple[QLabel, QLabel]] = {}
+        for key, label in (
+            ("hole_ld_ratio", "Hole L/D ratio"),
+            ("radial_engagement", "Radial engagement"),
+            ("axial_doc_ratio", "Axial DOC"),
+            ("mrr", "Calculated MRR"),
+            ("rpm_usage", "Machine RPM usage"),
+            ("feed_usage", "Machine feed usage"),
+            ("tap_relationship", "Tapping relationship"),
+        ):
+            label_widget = QLabel(label)
+            value = QLabel("—")
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.derived_labels[key] = value
+            self.derived_rows[key] = (label_widget, value)
+            derived_form.addRow(label_widget, value)
+        self.derived_group.setVisible(False)
+        outer.addWidget(self.derived_group)
+
+        self.ai_context_group = QGroupBox("AI context / estimates")
+        ai_context_form = QFormLayout(self.ai_context_group)
+        ai_context_form.setContentsMargins(14, 10, 14, 10)
+        self.ai_context_labels: dict[str, QLabel] = {}
+        self.ai_context_rows: dict[str, tuple[QLabel, QLabel]] = {}
+        for key, label in (
+            ("engagement_description", "AI engagement context"),
+            ("setup_risk", "AI setup risk"),
+            ("recommendation_summary", "AI summary"),
+            ("power", "AI estimated spindle power"),
+            ("torque", "AI estimated spindle torque"),
+        ):
+            label_widget = QLabel(label)
+            value = QLabel("—")
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.ai_context_labels[key] = value
+            self.ai_context_rows[key] = (label_widget, value)
+            ai_context_form.addRow(label_widget, value)
+        self.ai_context_group.setVisible(False)
+        outer.addWidget(self.ai_context_group)
 
         notes_group = QGroupBox("Machining notes")
         notes_layout = QVBoxLayout(notes_group)
@@ -366,6 +460,123 @@ class MainWindow(QMainWindow):
         return panel
 
     # Selection and persistence ------------------------------------------
+    def _calculator_state_payload(self) -> dict[str, Any]:
+        family = tool_family(self.tool_combo.currentText())
+        active_values = self.pages[family].values()
+        return {
+            "version": 1,
+            "global": {
+                "machine": self.machine_combo.currentText(),
+                "material": self.material_combo.currentText(),
+                "custom_material": self.custom_material.text().strip(),
+                "hardness_hrc": self.hardness.value(),
+                "tool_type": self.tool_combo.currentText(),
+                "operation": active_values.get("operation", ""),
+                "model": self.settings.model,
+                "reasoning_effort": self.settings.reasoning_effort,
+                "mock_mode": self.settings.mock_mode,
+            },
+            "families": {name: page.values() for name, page in self.pages.items()},
+        }
+
+    def _save_calculator_state(self) -> None:
+        if not hasattr(self, "pages"):
+            return
+        try:
+            self.settings_service.save_json_setting(
+                "last_calculator_state",
+                self._calculator_state_payload(),
+            )
+        except (TypeError, ValueError):
+            # State is a convenience; a serialization problem must not stop
+            # the calculator from closing or displaying a result.
+            return
+
+    def _restore_calculator_state(self) -> None:
+        state = self.settings_service.load_json_setting("last_calculator_state", {})
+        if not isinstance(state, dict):
+            return
+        global_state = state.get("global", {})
+        if not isinstance(global_state, dict):
+            global_state = {}
+
+        model = global_state.get("model")
+        if isinstance(model, str) and model in SUPPORTED_MODELS:
+            self.settings.model = model
+        reasoning_effort = global_state.get("reasoning_effort")
+        if isinstance(reasoning_effort, str) and reasoning_effort in {"low", "medium", "high"}:
+            self.settings.reasoning_effort = reasoning_effort
+        mock_mode = global_state.get("mock_mode")
+        if isinstance(mock_mode, bool):
+            self.settings.mock_mode = mock_mode
+        elif isinstance(mock_mode, str):
+            self.settings.mock_mode = mock_mode.strip().casefold() in {"1", "true", "yes", "on"}
+
+        self._set_combo_casefold(self.machine_combo, global_state.get("machine", ""))
+        self._set_combo_casefold(self.material_combo, global_state.get("material", ""))
+        tool_type = global_state.get("tool_type", "")
+        if tool_type:
+            self._set_combo_casefold(self.tool_combo, tool_type)
+        custom_material = global_state.get("custom_material")
+        if isinstance(custom_material, str):
+            self.custom_material.setText(custom_material)
+        try:
+            self.hardness.setValue(float(global_state.get("hardness_hrc") or 0))
+        except (TypeError, ValueError):
+            self.hardness.setValue(0.0)
+
+        families = state.get("families", {})
+        if isinstance(families, dict):
+            for family, values in families.items():
+                if family in self.pages and isinstance(values, dict):
+                    self.pages[family].load_values(values)
+
+        # Older state may have kept the current operation only at global
+        # level. Family-specific values take precedence when present.
+        current_family = tool_family(self.tool_combo.currentText())
+        operation = global_state.get("operation")
+        if operation and "operation" in self.pages[current_family].fields:
+            family_values = families.get(current_family, {}) if isinstance(families, dict) else {}
+            if not isinstance(family_values, dict) or "operation" not in family_values:
+                self.pages[current_family].load_values({"operation": operation})
+
+    def _save_window_state(self) -> None:
+        rect = self.normalGeometry() if self.isMaximized() else self.geometry()
+        state = normalise_window_state(
+            {
+                "x": rect.x(),
+                "y": rect.y(),
+                "width": rect.width(),
+                "height": rect.height(),
+                "maximized": self.isMaximized(),
+            }
+        )
+        if state:
+            self.settings_service.save_json_setting("last_window_state", state)
+
+    def _restore_window_state(self) -> None:
+        state = normalise_window_state(
+            self.settings_service.load_json_setting("last_window_state", {})
+        )
+        if not state:
+            return
+        screens = QGuiApplication.screens()
+        if not screens:
+            return
+        candidate = QRect(state["x"], state["y"], state["width"], state["height"])
+        screen = next(
+            (item for item in screens if item.availableGeometry().intersects(candidate)),
+            QGuiApplication.primaryScreen() or screens[0],
+        )
+        available = screen.availableGeometry()
+        width = min(max(self.minimumWidth(), candidate.width()), available.width())
+        height = min(max(self.minimumHeight(), candidate.height()), available.height())
+        x = min(max(candidate.x(), available.left()), available.right() - width + 1)
+        y = min(max(candidate.y(), available.top()), available.bottom() - height + 1)
+        self.setGeometry(QRect(x, y, width, height))
+        if state.get("maximized"):
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+
     def _refresh_machine_profiles(self) -> None:
         current = getattr(self, "machine_combo", None)
         current_text = current.currentText() if current else self.settings.last_machine
@@ -418,6 +629,11 @@ class MainWindow(QMainWindow):
         self.hardness.setVisible(hardened or custom)
         hardness_label.setVisible(hardened or custom)
 
+    def _tool_changed(self, value: str = "") -> None:
+        if not self._restoring_state:
+            self._save_calculator_state()
+        self._update_tool_page(value)
+
     def _update_tool_page(self, _value: str = "") -> None:
         if not hasattr(self, "tool_combo"):
             return
@@ -426,8 +642,11 @@ class MainWindow(QMainWindow):
         self.page_stack.setCurrentWidget(self.pages[family])
         if family == "end_mill":
             ball_nose = "ball nose" in tool_type.casefold()
+            bull_nose = "bull nose" in tool_type.casefold()
             self.pages[family].set_field_visible("ball_nose_mode", ball_nose)
             self.pages[family].set_field_visible("surface_finish_priority", ball_nose)
+            self.pages[family].set_field_visible("ball_nose_contact", ball_nose)
+            self.pages[family].set_field_visible("corner_radius_mm", bull_nose)
         self.saved_tool_combo.setCurrentIndex(0)
 
     def _machine(self) -> MachineProfile:
@@ -475,6 +694,7 @@ class MainWindow(QMainWindow):
         except json.JSONDecodeError:
             return
         self.pages[tool_family(self.tool_combo.currentText())].load_values(values)
+        self._save_calculator_state()
 
     def _save_current_tool(self) -> None:
         page = self.pages[tool_family(self.tool_combo.currentText())]
@@ -555,6 +775,7 @@ class MainWindow(QMainWindow):
             self._show_error(str(exc))
             return
         self._save_preferences(request)
+        self._save_calculator_state()
         self._set_calculating(True)
         self.result_status.setText("Calculating machining parameters…")
         self.result_banner.setVisible(False)
@@ -648,6 +869,7 @@ class MainWindow(QMainWindow):
         self.info_labels["cycle"].setText(cycle)
         self.info_labels["coolant"].setText(result.coolant or "—")
         self.info_labels["confidence"].setText(result.confidence.title())
+        self._show_derived_information(outcome, result, family)
 
         all_notes = list(result.notes)
         all_notes.extend(result.warnings)
@@ -668,6 +890,128 @@ class MainWindow(QMainWindow):
         self.save_preference_button.setEnabled(outcome.source != "mock")
         self.retry_button.setVisible(False)
         self._populate_debug(outcome)
+
+    @staticmethod
+    def _parameter_number(parameters: dict[str, Any], *names: str) -> float | None:
+        for name in names:
+            value = parameters.get(name)
+            if value is None or value == "":
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(number):
+                return number
+        return None
+
+    @staticmethod
+    def _set_optional_row(
+        rows: dict[str, tuple[QLabel, QLabel]],
+        key: str,
+        value: str | None,
+    ) -> bool:
+        label, value_widget = rows[key]
+        visible = value is not None and bool(str(value).strip())
+        label.setVisible(visible)
+        value_widget.setVisible(visible)
+        value_widget.setText(value if visible else "—")
+        return visible
+
+    def _show_derived_information(
+        self,
+        outcome: CalculationOutcome,
+        result: MachiningResult,
+        family: str,
+    ) -> None:
+        request = outcome.normalized_request if isinstance(outcome.normalized_request, dict) else {}
+        parameters = request.get("parameters", {})
+        if not isinstance(parameters, dict):
+            parameters = {}
+        diameter = self._parameter_number(parameters, "diameter_mm", "cutter_diameter_mm")
+        depth = self._parameter_number(parameters, "hole_depth_mm")
+        machine = self._machine()
+
+        derived: dict[str, str | None] = {
+            "hole_ld_ratio": None,
+            "radial_engagement": None,
+            "axial_doc_ratio": None,
+            "mrr": None,
+            "rpm_usage": None,
+            "feed_usage": None,
+            "tap_relationship": None,
+        }
+        ld = hole_ld_ratio(depth, diameter) if family in {"drill", "reamer"} else None
+        if ld is not None:
+            derived["hole_ld_ratio"] = f"{ld:.2f}× diameter"
+
+        radial_percent = radial_engagement_percent(result.radial_doc_mm, diameter)
+        if result.radial_doc_mm is not None and radial_percent is not None:
+            derived["radial_engagement"] = (
+                f"{result.radial_doc_mm:.3f} mm ({radial_percent:.1f}% cutter D)"
+            )
+
+        axial_ratio = axial_doc_ratio(result.axial_doc_mm, diameter)
+        if result.axial_doc_mm is not None and axial_ratio is not None:
+            derived["axial_doc_ratio"] = f"{result.axial_doc_mm:.3f} mm ({axial_ratio:.2f}×D)"
+
+        mrr = (
+            material_removal_rate_cm3_min(result.axial_doc_mm, result.radial_doc_mm, result.feed_mm_min)
+            if family in {"end_mill", "indexable"}
+            else None
+        )
+        if mrr is not None:
+            derived["mrr"] = f"{mrr:.3f} cm³/min"
+
+        rpm_usage_value = usage_percent(result.rpm, machine.max_rpm)
+        if result.rpm is not None and rpm_usage_value is not None:
+            derived["rpm_usage"] = (
+                f"{self._format_value(result.rpm, 'RPM')} / "
+                f"{self._format_value(machine.max_rpm, 'RPM')} ({rpm_usage_value:.1f}%)"
+            )
+        feed_usage_value = usage_percent(result.feed_mm_min, machine.max_feed_mm_min)
+        if result.feed_mm_min is not None and feed_usage_value is not None:
+            derived["feed_usage"] = (
+                f"{self._format_value(result.feed_mm_min, 'mm/min')} / "
+                f"{self._format_value(machine.max_feed_mm_min, 'mm/min')} ({feed_usage_value:.1f}%)"
+            )
+
+        if family == "tap":
+            pitch = result.tap_pitch_mm or self._parameter_number(parameters, "pitch_mm")
+            tap_parts: list[str] = []
+            if pitch is not None:
+                tap_parts.append(f"pitch {pitch:g} mm")
+            if result.feed_per_rev_mm is not None:
+                tap_parts.append(f"feed/rev {result.feed_per_rev_mm:g} mm")
+            if result.rpm is not None:
+                tap_parts.append(f"{result.rpm:g} RPM")
+            if result.feed_mm_min is not None:
+                tap_parts.append(f"feed {result.feed_mm_min:g} mm/min")
+            derived["tap_relationship"] = " · ".join(tap_parts) or None
+
+        derived_visible = [
+            self._set_optional_row(self.derived_rows, key, value)
+            for key, value in derived.items()
+        ]
+        self.derived_group.setVisible(any(derived_visible))
+
+        torque = result.estimated_spindle_torque_nm
+        if torque is None:
+            torque = torque_from_power(result.estimated_spindle_power_kw, result.rpm)
+        ai_context: dict[str, str | None] = {
+            "engagement_description": result.engagement_description,
+            "setup_risk": result.setup_risk.title() if result.setup_risk else None,
+            "recommendation_summary": result.recommendation_summary,
+            "power": self._format_value(result.estimated_spindle_power_kw, "kW")
+            if result.estimated_spindle_power_kw is not None
+            else None,
+            "torque": self._format_value(torque, "N·m") if torque is not None else None,
+        }
+        ai_visible = [
+            self._set_optional_row(self.ai_context_rows, key, value)
+            for key, value in ai_context.items()
+        ]
+        self.ai_context_group.setVisible(any(ai_visible))
 
     @staticmethod
     def _format_value(value: float | None, suffix: str) -> str:
@@ -734,6 +1078,9 @@ class MainWindow(QMainWindow):
         self.debug_button.setText("Hide advanced / debug" if visible else "Show advanced / debug")
 
     # Settings and helpers -------------------------------------------------
+    def _open_about(self) -> None:
+        AboutDialog(self).exec()
+
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.database, replace(self.settings), self)
         dialog.connection_test_finished.connect(self._connection_test_finished)
@@ -793,6 +1140,8 @@ class MainWindow(QMainWindow):
                 return
 
     def closeEvent(self, event) -> None:
+        self._save_calculator_state()
+        self._save_window_state()
         if self._worker:
             self._worker.cancel()
         if self._thread and self._thread.isRunning():
@@ -811,6 +1160,8 @@ def apply_styles(app: QApplication) -> None:
         QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #4c5965; font-weight: 600; }
         QFrame#inputPanel, QFrame#resultPanel { background: transparent; }
         QLabel#appTitle { font-size: 22pt; font-weight: 700; color: #17212b; }
+        QLabel#publisherBrand { color: #CE1D1D; font-size: 9pt; font-weight: 800; letter-spacing: 2px; }
+        QLabel#brandIcon { background: transparent; }
         QLabel#subtitle, QLabel#hint { color: #66727d; }
         QLabel#formHeading { color: #2f6d84; font-size: 9pt; font-weight: 700; letter-spacing: 1px; padding-top: 5px; }
         QLabel#statusBadge, QLabel#readyBadge, QLabel#mockBadge, QLabel#warningBadge { padding: 7px 12px; border-radius: 14px; font-weight: 700; }

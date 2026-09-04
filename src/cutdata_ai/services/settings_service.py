@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import ctypes.wintypes
+import json
 import os
 from dataclasses import asdict, dataclass
 
@@ -115,6 +116,25 @@ class SettingsService:
         values = asdict(settings)
         for key, value in values.items():
             self.database.set_setting(key, ("1" if value else "0") if isinstance(value, bool) else str(value))
+
+    def load_json_setting(self, key: str, default=None):
+        """Load an opaque JSON setting without allowing bad state to block startup."""
+
+        raw = self.database.get_setting(key)
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return default
+
+    def save_json_setting(self, key: str, value) -> None:
+        """Save a JSON-compatible setting with stable ordering."""
+
+        self.database.set_setting(
+            key,
+            json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        )
 
     def get_api_key(self) -> str:
         environment_key, saved_key = self._read_api_keys()

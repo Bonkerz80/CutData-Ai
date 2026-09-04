@@ -15,7 +15,7 @@ a = Analysis(
     ['run_app.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[('src/cutdata_ai/assets', 'cutdata_ai/assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -53,6 +53,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='src/cutdata_ai/assets/cutdata_ai.ico',
 )
 coll = COLLECT(
     exe,

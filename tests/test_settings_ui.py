@@ -3,13 +3,16 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.openai_service import MockOpenAIService, OpenAIService
 from src.cutdata_ai.services.settings_service import SecretStore, SettingsService
-from src.cutdata_ai.ui.dialogs import ConnectionTestWorker, SettingsDialog
-from src.cutdata_ai.ui.main_window import MainWindow
+from src.cutdata_ai.config.constants import COMPANY_NAME, ICON_SVG_PATH
+from src.cutdata_ai.services.normalization import normalize_request, request_hash
+from src.cutdata_ai.ui.dialogs import AboutDialog, ConnectionTestWorker, SettingsDialog
+from src.cutdata_ai.ui.main_window import MainWindow, normalise_window_state
 
 
 @pytest.fixture(scope="session")
@@ -150,3 +153,66 @@ def test_connection_worker_surfaces_result_without_touching_ui_thread():
     worker.run()
 
     assert received and received[0].success is True
+
+
+def test_calculator_state_persists_global_and_family_values_without_changing_request_hash(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / "calculator-state.sqlite3")
+    first = MainWindow(database)
+    try:
+        first.machine_combo.setCurrentText("HAAS VF-9")
+        first.material_combo.setCurrentText("304 Stainless")
+        first.custom_material.setText("")
+        first.tool_combo.setCurrentText("Drill")
+        first.pages["drill"].fields["diameter_mm"].setValue(7.5)
+        first.pages["drill"].fields["flute_length_mm"].setValue(22.0)
+        first.pages["drill"].fields["chip_evacuation"].setCurrentText("Restricted")
+        first.tool_combo.setCurrentText("End Mill")
+        first.pages["end_mill"].fields["diameter_mm"].setValue(12.0)
+        first.pages["end_mill"].fields["setup_rigidity"].setCurrentText("Rigid")
+        first.pages["end_mill"].fields["toolholder_type"].setCurrentText("Shrink fit")
+        first.settings.model = "gpt-5.6-terra"
+        first.settings.reasoning_effort = "high"
+        first.settings.mock_mode = True
+        first._save_calculator_state()
+        saved_request = first._collect_request()
+        saved_hash = request_hash(normalize_request(saved_request))
+    finally:
+        close_widget(first, qapp)
+
+    second = MainWindow(database)
+    try:
+        assert second.machine_combo.currentText() == "HAAS VF-9"
+        assert second.material_combo.currentText() == "304 Stainless"
+        assert second.tool_combo.currentText() == "End Mill"
+        assert second.pages["drill"].fields["diameter_mm"].value() == 7.5
+        assert second.pages["drill"].fields["flute_length_mm"].value() == 22.0
+        assert second.pages["drill"].fields["chip_evacuation"].currentText() == "Restricted"
+        assert second.pages["end_mill"].fields["diameter_mm"].value() == 12.0
+        assert second.pages["end_mill"].fields["setup_rigidity"].currentText() == "Rigid"
+        assert second.pages["end_mill"].fields["toolholder_type"].currentText() == "Shrink fit"
+        assert second.settings.model == "gpt-5.6-terra"
+        assert second.settings.reasoning_effort == "high"
+        assert second.settings.mock_mode is True
+        assert request_hash(normalize_request(second._collect_request())) == saved_hash
+    finally:
+        close_widget(second, qapp)
+
+
+def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_path, monkeypatch):
+    assert normalise_window_state({"x": 20, "y": 30, "width": 900, "height": 700, "maximized": "true"})["maximized"] is True
+    assert normalise_window_state({"x": 20, "y": 30, "width": 0, "height": 700}) == {}
+    assert normalise_window_state("bad") == {}
+
+    dialog = AboutDialog()
+    try:
+        text = dialog.details.text()
+        assert "PPT" in text
+        assert "CutData AI" in dialog.windowTitle()
+        assert COMPANY_NAME in text
+        assert "Version" in text
+        assert "LOCALAPPDATA" not in text
+        assert "secret" not in text.casefold()
+        assert not QIcon(str(ICON_SVG_PATH)).isNull()
+    finally:
+        close_widget(dialog, qapp)

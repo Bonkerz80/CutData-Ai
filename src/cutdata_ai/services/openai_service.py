@@ -308,6 +308,8 @@ def _metric_tap_drill(thread_size: str, pitch: float) -> float | None:
 class MockOpenAIService:
     """Offline, visibly non-production responses used for development.
 
+    Its deterministic values are isolated test data and are never used as the
+    live machining knowledge engine.
     The calculation service deliberately does not write ``is_mock`` results to
     the production cache.
     """
@@ -354,6 +356,11 @@ class MockOpenAIService:
             "reaming_stock_mm": None,
             "tap_pitch_mm": None,
             "tap_drill_mm": None,
+            "estimated_spindle_power_kw": None,
+            "estimated_spindle_torque_nm": None,
+            "engagement_description": None,
+            "setup_risk": None,
+            "recommendation_summary": None,
             "coolant": _coolant(p),
             "confidence": "medium",
             "notes": ["Development mock result — not a production recommendation."],

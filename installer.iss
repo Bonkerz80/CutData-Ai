@@ -1,7 +1,8 @@
 #define MyAppName "CutData AI"
-#define MyAppVersion "0.1.2"
-#define MyAppPublisher "CutData AI"
-#define MyAppURL "https://github.com/Bonkerz80/CutData-AI"
+#define MyAppVersion "0.1.4"
+#define MyAppPublisher "PPT"
+#define MyAppURL "https://www.ppt-eng.co.uk/"
+#define MyAppSupportURL "https://github.com/Bonkerz80/CutData-AI"
 #define MyAppExeName "CutData AI.exe"
 
 [Setup]
@@ -11,8 +12,9 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
-AppUpdatesURL={#MyAppURL}
+AppSupportURL={#MyAppSupportURL}
+AppUpdatesURL={#MyAppSupportURL}
+SetupIconFile=src\cutdata_ai\assets\cutdata_ai.ico
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -30,7 +32,7 @@ VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Windows installer
 VersionInfoProductName={#MyAppName}
 VersionInfoProductVersion={#MyAppVersion}
-VersionInfoCopyright=Copyright (c) 2026 CutData AI
+VersionInfoCopyright=Copyright (c) 2026 PPT
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -55,8 +57,8 @@ Type: files; Name: "{app}\pyside6.abi3.dll"
 Type: files; Name: "{app}\shiboken6.abi3.dll"
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent

@@ -10,9 +10,10 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, qVersion
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from .cutdata_ai.config.constants import APP_NAME
+from .cutdata_ai.config.constants import APP_NAME, ICON_SVG_PATH, PUBLISHER_NAME
 from .cutdata_ai.config.settings import default_data_dir
 from .cutdata_ai.database.database import Database
 from .cutdata_ai.ui.main_window import MainWindow, apply_styles
@@ -25,9 +26,16 @@ def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--startup-check":
         startup_report = Path(sys.argv[2]).resolve()
         temporary_data = tempfile.TemporaryDirectory(prefix="cutdata-startup-")
+    if os.name == "nt":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("PPT.CutDataAI")
+        except Exception:
+            # The icon still works when this optional Windows taskbar hint is unavailable.
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    app.setOrganizationName("CutData AI")
+    app.setOrganizationName(PUBLISHER_NAME)
+    app.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
     apply_styles(app)
     data_dir = Path(temporary_data.name) if temporary_data else default_data_dir()
     database = Database(data_dir / "cutdata_ai.sqlite3")

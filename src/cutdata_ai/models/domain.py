@@ -72,6 +72,11 @@ class MachiningResult:
     reaming_stock_mm: float | None = None
     tap_pitch_mm: float | None = None
     tap_drill_mm: float | None = None
+    estimated_spindle_power_kw: float | None = None
+    estimated_spindle_torque_nm: float | None = None
+    engagement_description: str | None = None
+    setup_risk: str | None = None
+    recommendation_summary: str | None = None
     coolant: str = ""
     confidence: str = "medium"
     notes: list[str] = field(default_factory=list)
@@ -100,4 +105,3 @@ class CalculationOutcome:
     response_id: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     validation_corrections: list[str] = field(default_factory=list)
-

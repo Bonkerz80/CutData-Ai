@@ -1,6 +1,7 @@
 import json
 
-from src.cutdata_ai.config.constants import PROMPT_VERSION, SCHEMA_VERSION
+import pytest
+
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.models.domain import MachiningRequest, MachineProfile, MachiningResult
 from src.cutdata_ai.services.calculation_service import CalculationService
@@ -9,15 +10,28 @@ from src.cutdata_ai.services.openai_service import MockOpenAIService, ServiceRes
 
 
 MACHINE = MachineProfile("Test machine", 10000, 5000)
+OTHER_MACHINE = MachineProfile("Other machine", 10000, 5000)
 
 
-def req(diameter):
+def req(
+    diameter=22,
+    *,
+    material="Mild Steel",
+    depth=20,
+    coolant="Flood coolant",
+    machine_name="Test machine",
+):
     return MachiningRequest(
-        machine="Test machine",
-        material="Mild Steel",
+        machine=machine_name,
+        material=material,
         tool_type="Drill",
         operation="Drilling",
-        parameters={"diameter_mm": diameter, "tool_material": "HSS", "hole_depth_mm": 20},
+        parameters={
+            "diameter_mm": diameter,
+            "tool_material": "HSS",
+            "hole_depth_mm": depth,
+            "coolant_type": coolant,
+        },
     )
 
 
@@ -90,10 +104,48 @@ def test_saved_workshop_setting_takes_priority(tmp_path):
     assert ai.calls == 1
 
 
+@pytest.mark.parametrize(
+    ("changed_request", "machine"),
+    [
+        (req(22, depth=60), MACHINE),
+        (req(22, material="EN8"), MACHINE),
+        (req(22, coolant="Mist"), MACHINE),
+        (req(22, machine_name="Other machine"), OTHER_MACHINE),
+    ],
+    ids=["hole-depth", "material", "coolant", "machine"],
+)
+def test_materially_changed_condition_requires_a_new_ai_request(tmp_path, changed_request, machine):
+    database = Database(tmp_path / "changed.sqlite3")
+    ai = CountingAI()
+    service = CalculationService(database, ai)
+
+    service.calculate(req(22), MACHINE)
+    outcome = service.calculate(changed_request, machine)
+
+    assert outcome.source == "ai"
+    assert outcome.cache_hit is False
+    assert ai.calls == 2
+
+
+def test_saved_workshop_setting_only_applies_to_exact_canonical_request(tmp_path):
+    database = Database(tmp_path / "preferred-exact.sqlite3")
+    ai = CountingAI()
+    service = CalculationService(database, ai)
+    first = service.calculate(req(22), MACHINE)
+    preferred = first.result.copy()
+    preferred.rpm = 650
+    service.save_workshop_preference(first, preferred)
+
+    changed = service.calculate(req(22, depth=21), MACHINE)
+
+    assert changed.source == "ai"
+    assert changed.result.rpm != 650
+    assert ai.calls == 2
+
+
 def test_mock_results_are_not_written_to_production_cache(tmp_path):
     database = Database(tmp_path / "mock.sqlite3")
     service = CalculationService(database, MockOpenAIService())
     outcome = service.calculate(req(22), MACHINE)
     assert outcome.source == "mock"
     assert database.get_cache_record(outcome.request_hash) is None
-

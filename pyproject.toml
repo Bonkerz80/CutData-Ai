@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cutdata-ai"
-version = "0.1.2"
+version = "0.1.4"
 description = "A practical AI-assisted CNC speeds-and-feeds calculator"
 requires-python = ">=3.10"
 dependencies = [

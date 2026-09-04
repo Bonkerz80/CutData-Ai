@@ -142,7 +142,10 @@ class FieldPage(QWidget):
                 elif widget.isEditable():
                     widget.setCurrentText(str(value))
             elif isinstance(widget, QCheckBox):
-                widget.setChecked(bool(value))
+                if isinstance(value, str):
+                    widget.setChecked(value.strip().casefold() in {"1", "true", "yes", "on"})
+                else:
+                    widget.setChecked(bool(value))
             elif isinstance(widget, QLineEdit):
                 widget.setText(str(value))
             elif isinstance(widget, (QDoubleSpinBox, QSpinBox)):
@@ -163,6 +166,8 @@ class DrillPage(FieldPage):
         self.add_field("material_thickness_mm", "Material thickness (mm)", double_spin(25.0, step=0.1))
         self.add_field("hole_type", "Hole", combo(("Through hole", "Blind hole")))
         self.add_field("existing_pilot_hole_diameter_mm", "Pilot hole (mm, optional)", double_spin(0.0, step=0.1))
+        self.add_field("flute_length_mm", "Flute length (mm, optional)", double_spin(0.0, step=0.1))
+        self.add_field("chip_evacuation", "Chip evacuation", combo(("Not specified", "Good", "Restricted", "Deep-hole concern")))
         self.add_heading("Coolant")
         internal = QCheckBox("Internal / through-tool coolant")
         flood = QCheckBox("Flood coolant")
@@ -183,6 +188,7 @@ class ReamerPage(FieldPage):
         self.add_field("hole_type", "Hole", combo(("Through hole", "Blind hole")))
         self.add_field("existing_hole_diameter_mm", "Existing hole (mm)", double_spin(9.8, step=0.1))
         self.add_field("material_thickness_mm", "Material thickness (mm)", double_spin(25.0, step=0.1))
+        self.add_field("known_reaming_allowance_mm", "Known allowance (mm, optional)", double_spin(0.0, step=0.01))
         self.add_heading("Coolant")
         internal = QCheckBox("Internal / through-tool coolant")
         flood = QCheckBox("Flood coolant")
@@ -254,6 +260,7 @@ class EndMillPage(FieldPage):
         self.add_field("coating", "Coating", combo(("Uncoated", "TiN", "TiCN", "TiAlN", "AlTiN", "Other")))
         self.add_field("stickout_mm", "Tool stickout (mm)", double_spin(30.0, step=0.1))
         self.add_field("cutting_edge_length_mm", "Cutting edge length (mm, optional)", double_spin(0.0, step=0.1))
+        self.add_field("corner_radius_mm", "Corner radius (mm, optional)", double_spin(0.0, step=0.1))
         operation = combo(("Slotting", "Profiling", "Pocketing", "Adaptive / Dynamic Milling", "Finishing", "Plunging", "Helical interpolation", "Ramp"))
         self.add_field("operation", "Operation", operation)
         self.add_field("axial_doc_mm", "Axial DOC (mm)", double_spin(3.0, step=0.1))
@@ -264,6 +271,10 @@ class EndMillPage(FieldPage):
         self.add_field("finish_priority", "Priority", combo(("Balanced", "Surface finish", "Material removal")))
         self.add_field("ball_nose_mode", "Ball nose mode", combo(("Finishing", "Roughing")))
         self.add_field("surface_finish_priority", "Surface finish priority", combo(("Balanced", "High", "Maximum")))
+        self.add_field("ball_nose_contact", "Ball nose contact", combo(("Not specified", "Point / shallow contact", "Full-radius contact", "Angled / ramp contact")))
+        self.add_heading("Setup context")
+        self.add_field("setup_rigidity", "Setup rigidity", combo(("Light", "Normal", "Rigid")))
+        self.add_field("toolholder_type", "Toolholder", combo(("Collet", "Weldon / side lock", "Hydraulic", "Shrink fit", "Milling chuck", "Other")))
         self.add_field("coolant_type", "Coolant", combo(("Flood coolant", "Through-tool coolant", "Mist", "Air blast", "None / dry")))
         operation.currentTextChanged.connect(self._operation_changed)
         self._operation_changed(operation.currentText())
@@ -294,4 +305,7 @@ class IndexablePage(FieldPage):
         self.add_field("material_thickness_mm", "Material thickness (mm, optional)", double_spin(0.0, step=0.1))
         self.add_field("stock_remaining_mm", "Stock to remove (mm, optional)", double_spin(0.0, step=0.1))
         self.add_field("stickout_mm", "Cutter stickout (mm, optional)", double_spin(0.0, step=0.1))
+        self.add_heading("Setup context")
+        self.add_field("setup_rigidity", "Setup rigidity", combo(("Light", "Normal", "Rigid")))
+        self.add_field("toolholder_type", "Toolholder", combo(("Collet", "Weldon / side lock", "Hydraulic", "Shrink fit", "Milling chuck", "Other")))
         self.add_field("coolant_type", "Coolant", combo(("Flood coolant", "Through-tool coolant", "Mist", "Air blast", "None / dry")))

@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import replace
 from typing import Any
 
-from ..config.constants import PROMPT_VERSION, SCHEMA_VERSION, tool_family
+from ..config.constants import tool_family
 from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import StructuredResponseError, result_from_dict, result_from_json
-from .normalization import canonical_json, normalize_request, request_hash
-from .openai_service import OpenAIServiceError, ServiceResponse
+from .normalization import normalize_request, request_hash
+from .openai_service import ServiceResponse
 
 
 class CalculationInputError(ValueError):
@@ -95,20 +94,12 @@ def validate_request(request: MachiningRequest, machine: MachineProfile) -> tupl
     if request.hardness_hrc is not None and request.hardness_hrc > 70:
         warnings.append("Hardness is above the usual HRC range; confirm the material specification.")
 
-    if family in {"drill", "reamer"} and diameter:
-        depth = _number(p, "hole_depth_mm")
-        if depth is not None and depth > diameter * 6:
-            warnings.append("Hole depth is more than 6× diameter; plan chip evacuation and tool guidance carefully.")
     if family == "reamer" and diameter:
         existing = _number(p, "existing_hole_diameter_mm")
         if existing is not None and existing > 0:
             stock = diameter - existing
             if stock <= 0:
                 errors.append("Existing hole must be smaller than the reamer diameter.")
-            elif stock > max(0.5, diameter * 0.08):
-                warnings.append("Reaming stock looks heavy; verify the bore size and consider a pre-finishing pass.")
-            elif stock < diameter * 0.002:
-                warnings.append("Reaming stock is very light; confirm the bore is clean and straight.")
 
     if machine.max_rpm <= 0:
         errors.append("The selected machine profile has no valid maximum spindle speed.")
@@ -123,12 +114,25 @@ def _close(a: float | None, b: float | None, relative: float = 0.02) -> bool:
     return abs(a - b) <= max(0.02, abs(b) * relative)
 
 
+def _enabled(value: Any, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def validate_and_correct_result(
     result: MachiningResult,
     request: MachiningRequest,
     machine: MachineProfile,
 ) -> tuple[MachiningResult, list[str]]:
-    """Make arithmetic and machine-limit invariants authoritative locally."""
+    """Validate arithmetic and hard machine limits without inventing advice.
+
+    The AI owns machining choices such as pecking, tap-drill size, and reaming
+    allowances. This function only derives dependent arithmetic values and
+    reduces RPM when a hard machine limit requires it.
+    """
 
     corrected = result.copy()
     corrections: list[str] = []
@@ -141,108 +145,113 @@ def validate_and_correct_result(
 
     if corrected.rpm is None or corrected.rpm <= 0:
         raise StructuredResponseError("Result does not contain a usable RPM")
-    if corrected.rpm > machine.max_rpm:
-        corrected.rpm = machine.max_rpm
-        corrections.append(f"RPM limited locally to the {machine.name} maximum of {machine.max_rpm:g} RPM.")
-        warnings.append(corrections[-1])
 
-    expected_speed = cutting_speed_m_min(diameter, corrected.rpm)
-    if not _close(corrected.cutting_speed_m_min, expected_speed):
-        corrected.cutting_speed_m_min = expected_speed
-        corrections.append("Cutting speed recalculated from diameter and RPM.")
-    if expected_speed > 1000:
-        warnings.append("Cutting speed is unusually high; confirm the tool, coating, and material before running.")
+    if corrected.feed_mm_min is None:
+        raise StructuredResponseError("Result does not contain a usable feed")
+    source_rpm = corrected.rpm
 
     if family in {"drill", "reamer"}:
         if corrected.feed_per_rev_mm is None:
-            if corrected.feed_mm_min is None:
-                raise StructuredResponseError("Result does not contain a drilling/reaming feed")
-            corrected.feed_per_rev_mm = corrected.feed_mm_min / corrected.rpm
+            corrected.feed_per_rev_mm = result.feed_mm_min / source_rpm
             corrections.append("Feed per revolution derived from feed and RPM.")
-        corrected.feed_mm_min = drilling_feed_mm_min(corrected.rpm, corrected.feed_per_rev_mm)
-        if not _close(result.feed_mm_min, corrected.feed_mm_min):
-            corrections.append("Feed recalculated from RPM × feed per revolution.")
-
-        depth = _number(p, "hole_depth_mm")
-        if family == "drill" and depth is not None and depth > diameter * 4:
-            if corrected.peck_recommended is not True:
-                corrected.peck_recommended = True
-                warnings.append("Deep hole: pecking is recommended.")
-                corrections.append("Deep-hole peck recommendation applied locally.")
-            if corrected.peck_mm is None or corrected.peck_mm <= 0:
-                corrected.peck_mm = min(max(diameter * 1.5, 2.0), max(depth / 3, 2.0))
-                corrections.append("A conservative peck depth was supplied for the deep hole.")
-        if family == "drill" and depth and corrected.peck_mm and corrected.peck_mm > depth:
-            warnings.append("Peck depth exceeds the entered hole depth; verify the cycle before running.")
-        if family == "reamer":
-            corrected.peck_recommended = False
-            corrected.peck_mm = None
-            if corrected.recommended_cycle and "peck" in corrected.recommended_cycle.casefold():
-                corrected.recommended_cycle = "Constant-feed reaming cycle; do not peck"
-                warnings.append("Reamers should not use a drilling-style peck cycle.")
-                corrections.append("Reaming cycle corrected to continuous feed.")
-            existing = _number(p, "existing_hole_diameter_mm")
-            if existing and existing > 0:
-                local_stock = diameter - existing
-                if corrected.reaming_stock_mm is None or not _close(corrected.reaming_stock_mm, local_stock, 0.1):
-                    corrected.reaming_stock_mm = local_stock
-                    corrections.append("Reaming stock recalculated from reamer and existing-hole diameters.")
-                if corrected.pre_ream_size_mm is None:
-                    corrected.pre_ream_size_mm = existing
-                    corrections.append("Pre-ream size taken from the existing-hole diameter.")
-
     elif family == "tap":
         pitch = _number(p, "pitch_mm")
         if pitch is None or pitch <= 0:
             raise CalculationInputError("Pitch must be greater than 0 mm.")
         corrected.tap_pitch_mm = pitch
-        expected_feed = tapping_feed_mm_min(corrected.rpm, pitch)
-        corrected.feed_per_rev_mm = pitch
-        if not _close(corrected.feed_mm_min, expected_feed):
-            corrected.feed_mm_min = expected_feed
-            corrections.append("Rigid-tap feed recalculated as RPM × exact pitch.")
-        thread_size = str(p.get("thread_size", ""))
-        if pitch >= diameter:
-            warnings.append("Pitch is unusually large relative to the nominal thread diameter; verify the thread data.")
-        if corrected.tap_drill_mm is None and thread_size.casefold().startswith("m"):
-            try:
-                nominal = float(thread_size.casefold().removeprefix("m").strip())
-                corrected.tap_drill_mm = max(0.1, nominal - pitch)
-                corrections.append("Metric tapping drill size derived from nominal diameter minus pitch.")
-            except ValueError:
-                pass
-
+        rigid_tapping = _enabled(p.get("rigid_tapping"), default=True)
+        if rigid_tapping:
+            corrected.feed_per_rev_mm = pitch
+        elif corrected.feed_per_rev_mm is None:
+            corrected.feed_per_rev_mm = result.feed_mm_min / source_rpm
+            corrections.append("Feed per revolution derived from feed and RPM.")
     else:
         count = _number(p, "flute_count", "insert_count")
         if count is None or count < 1:
             raise CalculationInputError("Flute/insert count must be at least 1.")
         if corrected.feed_per_tooth_mm is None:
-            if corrected.feed_mm_min is None:
-                raise StructuredResponseError("Result does not contain a milling feed")
-            corrected.feed_per_tooth_mm = corrected.feed_mm_min / (corrected.rpm * count)
+            corrected.feed_per_tooth_mm = result.feed_mm_min / (source_rpm * count)
             corrections.append("Feed per tooth derived from feed, RPM, and tooth count.")
-        corrected.feed_mm_min = milling_feed_mm_min(corrected.rpm, int(count), corrected.feed_per_tooth_mm)
-        if not _close(result.feed_mm_min, corrected.feed_mm_min):
-            corrections.append("Milling feed recalculated as RPM × teeth × feed per tooth.")
-        if corrected.radial_doc_mm is None and corrected.stepover_mm is not None:
-            corrected.radial_doc_mm = corrected.stepover_mm
-        if corrected.stepover_mm is None and corrected.radial_doc_mm is not None:
-            corrected.stepover_mm = corrected.radial_doc_mm
 
-    if corrected.axial_doc_mm is not None and corrected.axial_doc_mm > diameter * 2:
-        warnings.append("Axial DOC is more than 2× cutter diameter; confirm the tool and setup can support it.")
-    if corrected.radial_doc_mm is not None and corrected.radial_doc_mm > diameter * 1.25:
-        warnings.append("Radial engagement is greater than the cutter diameter; confirm this is intentional.")
-
-    if corrected.feed_mm_min is not None and corrected.feed_mm_min > machine.max_feed_mm_min:
-        corrected.feed_mm_min = machine.max_feed_mm_min
-        corrections.append(f"Feed limited locally to the {machine.name} maximum of {machine.max_feed_mm_min:g} mm/min.")
-        warnings.append(corrections[-1])
-        if family in {"drill", "reamer", "tap"}:
-            corrected.feed_per_rev_mm = corrected.feed_mm_min / corrected.rpm
+    def recalculate_feed() -> None:
+        if family in {"drill", "reamer"}:
+            corrected.feed_mm_min = drilling_feed_mm_min(corrected.rpm, corrected.feed_per_rev_mm)
+        elif family == "tap":
+            if rigid_tapping:
+                corrected.feed_mm_min = tapping_feed_mm_min(corrected.rpm, pitch)
+            elif corrected.feed_per_rev_mm is not None:
+                corrected.feed_mm_min = drilling_feed_mm_min(corrected.rpm, corrected.feed_per_rev_mm)
         else:
-            count = max(1, int(_number(p, "flute_count", "insert_count") or 1))
-            corrected.feed_per_tooth_mm = corrected.feed_mm_min / (corrected.rpm * count)
+            corrected.feed_mm_min = milling_feed_mm_min(corrected.rpm, count, corrected.feed_per_tooth_mm)
+
+    if corrected.rpm > machine.max_rpm:
+        corrected.rpm = machine.max_rpm
+        correction = f"RPM limited locally to the {machine.name} maximum of {machine.max_rpm:g} RPM."
+        corrections.append(correction)
+        warnings.append(correction)
+    recalculate_feed()
+    if not _close(result.feed_mm_min, corrected.feed_mm_min):
+        if family == "tap" and rigid_tapping:
+            corrections.append("Rigid-tap feed recalculated as RPM × exact pitch.")
+        elif family in {"drill", "reamer"}:
+            corrections.append("Feed recalculated from RPM × feed per revolution.")
+        elif family != "tap":
+            corrections.append("Milling feed recalculated as RPM × teeth × feed per tooth.")
+
+    if family == "drill":
+        if corrected.peck_recommended is not None and not isinstance(corrected.peck_recommended, bool):
+            raise StructuredResponseError("Peck recommendation must be boolean or null")
+        if corrected.peck_recommended is True and (corrected.peck_mm is None or corrected.peck_mm <= 0):
+            raise StructuredResponseError("Pecking was recommended but no positive peck depth was provided")
+        depth = _number(p, "hole_depth_mm")
+        if depth is not None and corrected.peck_mm is not None and corrected.peck_mm > depth:
+            warnings.append("Peck depth exceeds the entered hole depth; verify the cycle before running.")
+        if corrected.peck_recommended is None:
+            warnings.append("AI did not specify whether pecking is required; verify the drilling cycle.")
+    elif family == "reamer":
+        if corrected.peck_recommended is True or (
+            corrected.recommended_cycle and "peck" in corrected.recommended_cycle.casefold()
+        ):
+            raise StructuredResponseError("Reamer response requested a drilling-style peck cycle")
+        if corrected.pre_ream_size_mm is None:
+            warnings.append("AI did not provide a pre-ream size; verify the bore preparation.")
+        if corrected.reaming_stock_mm is None:
+            warnings.append("AI did not provide reaming stock; verify the bore preparation.")
+    elif family == "tap":
+        if pitch >= diameter:
+            warnings.append("Pitch is unusually large relative to the nominal thread diameter; verify the thread data.")
+        if corrected.tap_drill_mm is None:
+            warnings.append("AI did not provide a tapping drill size; verify the thread and tap type.")
+
+    if corrected.feed_mm_min > machine.max_feed_mm_min:
+        if family == "tap" and rigid_tapping:
+            feed_per_rpm = pitch
+            relationship = "RPM × exact pitch"
+        elif family in {"drill", "reamer", "tap"}:
+            feed_per_rpm = corrected.feed_per_rev_mm
+            relationship = "RPM × feed per revolution"
+        else:
+            feed_per_rpm = corrected.feed_per_tooth_mm * count
+            relationship = "RPM × teeth × feed per tooth"
+        if feed_per_rpm is None or feed_per_rpm <= 0:
+            raise StructuredResponseError("Feed exceeds the machine limit but has no valid dependent relationship")
+        allowed_rpm = machine.max_feed_mm_min / feed_per_rpm
+        if allowed_rpm <= 0:
+            raise StructuredResponseError("Machine feed limit cannot support the returned feed relationship")
+        if allowed_rpm < corrected.rpm:
+            corrected.rpm = allowed_rpm
+            correction = (
+                f"RPM reduced locally to {allowed_rpm:g} to stay within the {machine.name} feed limit "
+                f"while preserving {relationship}."
+            )
+            corrections.append(correction)
+            warnings.append(correction)
+            recalculate_feed()
+
+    expected_speed = cutting_speed_m_min(diameter, corrected.rpm)
+    if not _close(result.cutting_speed_m_min, expected_speed):
+        corrected.cutting_speed_m_min = expected_speed
+        corrections.append("Cutting speed recalculated from diameter and RPM.")
 
     corrected.warnings = list(dict.fromkeys(warnings))
     return corrected, corrections

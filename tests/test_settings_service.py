@@ -88,3 +88,14 @@ def test_clear_saved_key_does_not_remove_environment_key(tmp_path, monkeypatch):
     assert service.get_saved_api_key() == ""
     assert service.get_api_key() == "environment-secret"
     assert service.get_api_key_source() == API_KEY_SOURCE_ENVIRONMENT
+
+
+def test_json_settings_round_trip_and_malformed_fallback(tmp_path):
+    service = SettingsService(Database(tmp_path / "json.sqlite3"))
+    payload = {"families": {"drill": {"diameter_mm": 8.5}}, "maximized": False}
+
+    service.save_json_setting("last_calculator_state", payload)
+
+    assert service.load_json_setting("last_calculator_state") == payload
+    service.database.set_setting("last_calculator_state", "{not-json")
+    assert service.load_json_setting("last_calculator_state", {"safe": True}) == {"safe": True}

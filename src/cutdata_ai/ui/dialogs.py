@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -22,7 +23,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config.constants import SUPPORTED_MODELS
+from ..config.constants import (
+    APP_NAME,
+    APP_VERSION,
+    COMPANY_NAME,
+    COMPANY_WEBSITE,
+    DEFAULT_MODEL,
+    ICON_SVG_PATH,
+    PRODUCT_TAGLINE,
+    PUBLISHER_NAME,
+    REPOSITORY_URL,
+    SUPPORTED_MODELS,
+    model_display_name,
+)
 from ..config.settings import AppSettings
 from ..database.database import Database
 from ..services.openai_service import (
@@ -57,6 +70,53 @@ class ConnectionTestWorker(QObject):
 
     def cancel(self) -> None:
         self.cancelled = True
+
+
+class AboutDialog(QDialog):
+    """Show product, publisher, version, engine, and repository details."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"About {APP_NAME}")
+        self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
+        self.setMinimumWidth(430)
+
+        layout = QVBoxLayout(self)
+        brand_row = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(QIcon(str(ICON_SVG_PATH)).pixmap(68, 68))
+        icon.setAccessibleName(f"{PUBLISHER_NAME} mark")
+        brand_row.addWidget(icon)
+        brand_text = QVBoxLayout()
+        publisher = QLabel(PUBLISHER_NAME)
+        publisher.setObjectName("publisherBrand")
+        product = QLabel(APP_NAME)
+        product.setObjectName("appTitle")
+        brand_text.addWidget(publisher)
+        brand_text.addWidget(product)
+        brand_row.addLayout(brand_text)
+        brand_row.addStretch(1)
+        layout.addLayout(brand_row)
+
+        details = QLabel(
+            f"Version {APP_VERSION}<br>"
+            f"{PRODUCT_TAGLINE}<br><br>"
+            f"Developed by {PUBLISHER_NAME}<br>"
+            f"{COMPANY_NAME}<br>"
+            f"Default engine: {model_display_name(DEFAULT_MODEL)}<br>"
+            f'<a href="{COMPANY_WEBSITE}">{COMPANY_WEBSITE}</a><br>'
+            f'<a href="{REPOSITORY_URL}">{REPOSITORY_URL}</a>'
+        )
+        details.setOpenExternalLinks(True)
+        details.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        details.setWordWrap(True)
+        details.setObjectName("aboutDetails")
+        layout.addWidget(details)
+        self.details = details
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 class SettingsDialog(QDialog):
