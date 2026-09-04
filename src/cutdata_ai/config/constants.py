@@ -24,12 +24,13 @@ from .branding import (
     PRODUCT_TAGLINE,
     PUBLISHER_NAME,
     REPOSITORY_URL,
+    WINDOWS_ICON_PATH,
     branding_asset,
     resource_path,
 )
 
 
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 PROMPT_VERSION = "2026-09-03.2"
 SCHEMA_VERSION = "2"
 DEFAULT_MODEL = "gpt-5.6-luna"
@@ -130,8 +131,6 @@ TOOL_TYPES = (
     "Bull Nose / Corner Radius End Mill",
     "Face Mill",
     "Indexable End Mill",
-    "Slot Cutter",
-    "T-Slot Cutter",
     "Reamer",
     "Tap",
     "Thread Mill",
@@ -153,6 +152,12 @@ TOOL_FAMILY_BY_TYPE = {
     "Thread Mill": "end_mill",
     "Face Mill": "indexable",
     "Indexable End Mill": "indexable",
+}
+
+# These labels are retained only for reading older calculator state and
+# recent-calculation rows.  They are deliberately absent from TOOL_TYPES so
+# they cannot be selected for new calculations.
+LEGACY_TOOL_FAMILY_BY_TYPE = {
     "Slot Cutter": "indexable",
     "T-Slot Cutter": "indexable",
 }
@@ -166,7 +171,25 @@ COOLANTS = ("Flood coolant", "Through-tool coolant", "Mist", "Air blast", "None 
 def tool_family(tool_type: str) -> str:
     """Return the service/UI family for a tool label."""
 
-    return TOOL_FAMILY_BY_TYPE.get(tool_type, "end_mill")
+    value = str(tool_type or "").strip().casefold()
+    for mapping in (TOOL_FAMILY_BY_TYPE, LEGACY_TOOL_FAMILY_BY_TYPE):
+        for label, family in mapping.items():
+            if label.casefold() == value:
+                return family
+    return "end_mill"
+
+
+def compatible_tool_type(tool_type: str) -> str | None:
+    """Map a stored label to an active UI label without changing stored data."""
+
+    value = str(tool_type or "").strip().casefold()
+    for label in TOOL_TYPES:
+        if label.casefold() == value:
+            return label
+    for label, family in LEGACY_TOOL_FAMILY_BY_TYPE.items():
+        if label.casefold() == value:
+            return "Indexable End Mill" if family == "indexable" else None
+    return None
 
 
 def model_display_name(model: str) -> str:

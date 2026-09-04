@@ -7,7 +7,7 @@ import math
 from dataclasses import replace
 from typing import Any
 
-from PySide6.QtCore import QObject, QRect, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QRect, QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,26 +25,26 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
     QLineEdit,
-    QDoubleSpinBox,
 )
 
 from ..config.constants import (
     APP_NAME,
     APP_VERSION,
     COMPANY_NAME,
-    ICON_SVG_PATH,
     MATERIALS,
     PRODUCT_TAGLINE,
     PUBLISHER_NAME,
     PPT_HORIZONTAL_LOGO_PATH,
     SUPPORTED_MODELS,
     TOOL_TYPES,
-    TOOL_FAMILY_BY_TYPE,
+    WINDOWS_ICON_PATH,
+    compatible_tool_type,
     model_display_name,
     tool_family,
 )
@@ -52,7 +52,7 @@ from ..config.settings import AppSettings
 from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import result_from_json
-from ..services.calculation_service import CalculationInputError, CalculationService, validate_and_correct_result
+from ..services.calculation_service import CalculationService
 from ..services.derived_values import (
     axial_doc_ratio,
     hole_ld_ratio,
@@ -68,6 +68,7 @@ from ..services.openai_service import (
     UnavailableOpenAIService,
 )
 from ..services.settings_service import SettingsService
+from ..services.recent_summary import recent_item_text
 from .dialogs import AboutDialog, SettingsDialog
 from .widgets import DrillPage, EndMillPage, FieldPage, IndexablePage, ReamerPage, TapPage, combo, double_spin
 
@@ -131,13 +132,12 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: CalculationWorker | None = None
         self._current_outcome: CalculationOutcome | None = None
-        self._original_result: MachiningResult | None = None
         self._debug_visible = False
         self._api_error = False
         self.ai_service = None
 
         self.setWindowTitle(f"{PUBLISHER_NAME} {APP_NAME} {APP_VERSION} — CNC Machining Calculator")
-        self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
+        self.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
         self.setMinimumSize(1180, 760)
         self.resize(1450, 900)
         self._build_ui()
@@ -280,17 +280,6 @@ class MainWindow(QMainWindow):
         self.tool_combo.currentTextChanged.connect(self._tool_changed)
         form.addRow("Tool", self.tool_combo)
 
-        saved_row = QWidget()
-        saved_layout = QHBoxLayout(saved_row)
-        saved_layout.setContentsMargins(0, 0, 0, 0)
-        self.saved_tool_combo = QComboBox()
-        self.saved_tool_combo.addItem("— no saved tool —", None)
-        self.saved_tool_combo.currentIndexChanged.connect(self._load_selected_tool)
-        save_tool_button = QPushButton("Save current tool")
-        save_tool_button.clicked.connect(self._save_current_tool)
-        saved_layout.addWidget(self.saved_tool_combo, 1)
-        saved_layout.addWidget(save_tool_button)
-        form.addRow("Saved tool", saved_row)
         outer.addWidget(workflow)
 
         page_scroll = QScrollArea()
@@ -331,15 +320,26 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.calculate_button, 1)
         actions.addWidget(self.cancel_button)
         outer.addLayout(actions)
-        self._refresh_saved_tools()
         return panel
 
     def _build_result_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("resultPanel")
-        outer = QVBoxLayout(panel)
+        self.result_panel = panel
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        result_scroll = QScrollArea()
+        result_scroll.setObjectName("resultScroll")
+        result_scroll.setWidgetResizable(True)
+        result_scroll.setFrameShape(QFrame.NoFrame)
+        result_content = QWidget()
+        result_content.setObjectName("resultContent")
+        outer = QVBoxLayout(result_content)
         outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(12)
+        result_scroll.setWidget(result_content)
+        panel_layout.addWidget(result_scroll)
+        self.result_scroll = result_scroll
 
         self.result_status = QLabel("Enter the machining parameters, then calculate.")
         self.result_status.setObjectName("resultStatus")
@@ -355,7 +355,10 @@ class MainWindow(QMainWindow):
         key_layout.setContentsMargins(14, 14, 14, 14)
         key_layout.setHorizontalSpacing(12)
         key_layout.setVerticalSpacing(12)
-        self.result_fields: dict[str, QDoubleSpinBox] = {}
+        key_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.primary_group = key_group
+        self.result_key_layout = key_layout
+        self.result_fields: dict[str, QLabel] = {}
         self.result_cards: dict[str, QFrame] = {}
         specs = [
             ("rpm", "SPINDLE", "RPM"),
@@ -369,27 +372,40 @@ class MainWindow(QMainWindow):
         for index, (key, label, suffix) in enumerate(specs):
             card = QFrame()
             card.setObjectName("valueCard")
+            card.setMinimumWidth(145)
+            card.setMaximumWidth(245)
+            card.setMinimumHeight(82)
+            card.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(14, 10, 14, 12)
             small = QLabel(label)
             small.setObjectName("valueLabel")
-            value = double_spin(0.0, maximum=1000000.0, decimals=3, step=0.1)
-            value.setSuffix(f"  {suffix}")
+            value = QLabel("—")
+            value.setObjectName("resultValue")
+            value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             value.setMinimumHeight(42)
             value.setFont(QFont("Segoe UI", 16, QFont.Bold))
-            value.setToolTip("This value can be adjusted before saving a workshop setting.")
+            value.setProperty("unit", suffix)
+            value.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             card_layout.addWidget(small)
             card_layout.addWidget(value)
             self.result_fields[key] = value
             self.result_cards[key] = card
             key_layout.addWidget(card, index // 4, index % 4)
+        key_group.setVisible(False)
         outer.addWidget(key_group)
 
         info_group = QGroupBox("Secondary information")
         info_group.setObjectName("secondaryGroup")
-        info_form = QFormLayout(info_group)
-        info_form.setContentsMargins(14, 10, 14, 10)
+        info_layout = QGridLayout(info_group)
+        info_layout.setContentsMargins(14, 10, 14, 10)
+        info_layout.setHorizontalSpacing(18)
+        info_layout.setVerticalSpacing(5)
+        info_layout.setColumnMinimumWidth(0, 135)
+        info_layout.setColumnStretch(1, 1)
         self.info_labels: dict[str, QLabel] = {}
+        self.info_rows: dict[str, tuple[QLabel, QLabel]] = {}
         for key, label in (
             ("cutting_speed", "Cutting speed"),
             ("feed_per_tooth", "Feed per tooth"),
@@ -399,16 +415,28 @@ class MainWindow(QMainWindow):
             ("coolant", "Coolant"),
             ("confidence", "Confidence"),
         ):
-            value = QLabel("—")
+            label_widget = QLabel(label)
+            label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            value = QLabel()
+            value.setObjectName("infoValue")
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.info_labels[key] = value
-            info_form.addRow(label, value)
+            self.info_rows[key] = (label_widget, value)
+            row = len(self.info_rows) - 1
+            info_layout.addWidget(label_widget, row, 0)
+            info_layout.addWidget(value, row, 1)
+        info_group.setVisible(False)
+        self.info_group = info_group
         outer.addWidget(info_group)
 
         self.derived_group = QGroupBox("Derived data")
         self.derived_group.setObjectName("secondaryGroup")
-        derived_form = QFormLayout(self.derived_group)
-        derived_form.setContentsMargins(14, 10, 14, 10)
+        derived_layout = QGridLayout(self.derived_group)
+        derived_layout.setContentsMargins(14, 10, 14, 10)
+        derived_layout.setHorizontalSpacing(18)
+        derived_layout.setVerticalSpacing(5)
+        derived_layout.setColumnMinimumWidth(0, 135)
+        derived_layout.setColumnStretch(1, 1)
         self.derived_labels: dict[str, QLabel] = {}
         self.derived_rows: dict[str, tuple[QLabel, QLabel]] = {}
         for key, label in (
@@ -426,14 +454,21 @@ class MainWindow(QMainWindow):
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.derived_labels[key] = value
             self.derived_rows[key] = (label_widget, value)
-            derived_form.addRow(label_widget, value)
+            label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            row = len(self.derived_rows) - 1
+            derived_layout.addWidget(label_widget, row, 0)
+            derived_layout.addWidget(value, row, 1)
         self.derived_group.setVisible(False)
         outer.addWidget(self.derived_group)
 
         self.ai_context_group = QGroupBox("AI context / estimates")
         self.ai_context_group.setObjectName("secondaryGroup")
-        ai_context_form = QFormLayout(self.ai_context_group)
-        ai_context_form.setContentsMargins(14, 10, 14, 10)
+        ai_context_layout = QGridLayout(self.ai_context_group)
+        ai_context_layout.setContentsMargins(14, 10, 14, 10)
+        ai_context_layout.setHorizontalSpacing(18)
+        ai_context_layout.setVerticalSpacing(5)
+        ai_context_layout.setColumnMinimumWidth(0, 135)
+        ai_context_layout.setColumnStretch(1, 1)
         self.ai_context_labels: dict[str, QLabel] = {}
         self.ai_context_rows: dict[str, tuple[QLabel, QLabel]] = {}
         for key, label in (
@@ -449,7 +484,10 @@ class MainWindow(QMainWindow):
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.ai_context_labels[key] = value
             self.ai_context_rows[key] = (label_widget, value)
-            ai_context_form.addRow(label_widget, value)
+            label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            row = len(self.ai_context_rows) - 1
+            ai_context_layout.addWidget(label_widget, row, 0)
+            ai_context_layout.addWidget(value, row, 1)
         self.ai_context_group.setVisible(False)
         outer.addWidget(self.ai_context_group)
 
@@ -458,22 +496,20 @@ class MainWindow(QMainWindow):
         notes_layout = QVBoxLayout(notes_group)
         self.notes = QPlainTextEdit()
         self.notes.setReadOnly(True)
-        self.notes.setMaximumHeight(125)
+        self.notes.setFixedHeight(72)
         self.notes.setPlaceholderText("Notes and warnings will appear here.")
         notes_layout.addWidget(self.notes)
+        self.notes_group = notes_group
+        notes_group.setVisible(False)
         outer.addWidget(notes_group)
 
         buttons = QHBoxLayout()
-        self.save_preference_button = QPushButton("Save as workshop setting")
-        self.save_preference_button.setEnabled(False)
-        self.save_preference_button.clicked.connect(self._save_workshop_setting)
         self.retry_button = QPushButton("Retry")
         self.retry_button.setVisible(False)
         self.retry_button.clicked.connect(self._calculate)
         self.debug_button = QPushButton("Show advanced / debug")
         self.debug_button.setCheckable(True)
         self.debug_button.toggled.connect(self._toggle_debug)
-        buttons.addWidget(self.save_preference_button)
         buttons.addWidget(self.retry_button)
         buttons.addStretch(1)
         buttons.addWidget(self.debug_button)
@@ -569,8 +605,9 @@ class MainWindow(QMainWindow):
         self._set_combo_casefold(self.machine_combo, global_state.get("machine", ""))
         self._set_combo_casefold(self.material_combo, global_state.get("material", ""))
         tool_type = global_state.get("tool_type", "")
-        if tool_type:
-            self._set_combo_casefold(self.tool_combo, tool_type)
+        compatible_type = compatible_tool_type(tool_type) if tool_type else None
+        if compatible_type:
+            self._set_combo_casefold(self.tool_combo, compatible_type)
         custom_material = global_state.get("custom_material")
         if isinstance(custom_material, str):
             self.custom_material.setText(custom_material)
@@ -653,16 +690,6 @@ class MainWindow(QMainWindow):
             current.setCurrentText(current_text if current_text in self.machine_profiles else "Generic CNC Mill")
             current.blockSignals(False)
 
-    def _refresh_saved_tools(self) -> None:
-        if not hasattr(self, "saved_tool_combo"):
-            return
-        self.saved_tool_combo.blockSignals(True)
-        self.saved_tool_combo.clear()
-        self.saved_tool_combo.addItem("— no saved tool —", None)
-        for tool in self.database.saved_tools():
-            self.saved_tool_combo.addItem(tool["name"], tool["id"])
-        self.saved_tool_combo.blockSignals(False)
-
     def _apply_last_coolant(self) -> None:
         coolant = self.settings.last_coolant
         for family in ("tap", "end_mill", "indexable"):
@@ -701,7 +728,6 @@ class MainWindow(QMainWindow):
             self.pages[family].set_field_visible("surface_finish_priority", ball_nose)
             self.pages[family].set_field_visible("ball_nose_contact", ball_nose)
             self.pages[family].set_field_visible("corner_radius_mm", bull_nose)
-        self.saved_tool_combo.setCurrentIndex(0)
 
     def _machine(self) -> MachineProfile:
         return self.machine_profiles.get(
@@ -735,33 +761,6 @@ class MainWindow(QMainWindow):
             self.settings.last_coolant = str(coolant)
         self.settings_service.save(self.settings)
 
-    def _load_selected_tool(self, index: int) -> None:
-        if index <= 0:
-            return
-        tool_id = self.saved_tool_combo.itemData(index)
-        saved = self.database.get_saved_tool(int(tool_id)) if tool_id is not None else None
-        if not saved:
-            return
-        self.tool_combo.setCurrentText(saved["tool_type"])
-        try:
-            values = json.loads(saved["tool_json"])
-        except json.JSONDecodeError:
-            return
-        self.pages[tool_family(self.tool_combo.currentText())].load_values(values)
-        self._save_calculator_state()
-
-    def _save_current_tool(self) -> None:
-        page = self.pages[tool_family(self.tool_combo.currentText())]
-        values = page.values()
-        from PySide6.QtWidgets import QInputDialog
-
-        name, accepted = QInputDialog.getText(self, "Save tool", "Tool name")
-        if not accepted or not name.strip():
-            return
-        self.database.save_tool(name, self.tool_combo.currentText(), values)
-        self._refresh_saved_tools()
-        self.result_status.setText(f"Saved tool: {name.strip()}")
-
     def _load_recent(self) -> None:
         if not hasattr(self, "recent_list"):
             return
@@ -771,8 +770,9 @@ class MainWindow(QMainWindow):
                 normalized = json.loads(row["normalized_request_json"])
             except json.JSONDecodeError:
                 continue
-            label = f"{normalized.get('tool_type', '').title()} · {normalized.get('material', '').title()} · {row['created_at'][:16].replace('T', ' ')}"
+            label = recent_item_text(normalized)
             item = QListWidgetItem(label)
+            item.setSizeHint(QSize(0, 47 if "\n" in label else 31))
             item.setData(Qt.UserRole, row)
             self.recent_list.addItem(item)
 
@@ -788,9 +788,15 @@ class MainWindow(QMainWindow):
             return
         self._set_combo_casefold(self.machine_combo, normalized.get("machine", ""))
         self._set_combo_casefold(self.material_combo, normalized.get("material", ""))
-        self._set_combo_casefold(self.tool_combo, normalized.get("tool_type", ""))
+        stored_tool_type = str(normalized.get("tool_type", ""))
+        active_tool_type = compatible_tool_type(stored_tool_type)
+        if active_tool_type:
+            self._set_combo_casefold(self.tool_combo, active_tool_type)
         self.custom_material.setText(normalized.get("custom_material", ""))
-        self.hardness.setValue(float(normalized.get("hardness_hrc") or 0))
+        try:
+            self.hardness.setValue(float(normalized.get("hardness_hrc") or 0))
+        except (TypeError, ValueError):
+            self.hardness.setValue(0.0)
         page = self.pages[tool_family(self.tool_combo.currentText())]
         page_values = dict(normalized.get("parameters", {}))
         if "operation" in page.fields:
@@ -807,6 +813,7 @@ class MainWindow(QMainWindow):
         )
         self._show_result(outcome)
         self.result_status.setText("Reopened recent calculation")
+        self._save_calculator_state()
 
     # Calculation lifecycle ----------------------------------------------
     def _make_ai_service(self):
@@ -835,6 +842,7 @@ class MainWindow(QMainWindow):
         self.result_banner.setVisible(False)
         self.retry_button.setVisible(False)
         self.notes.clear()
+        self.notes_group.setVisible(False)
         worker_service = CalculationService(self.database, ai_service)
         self._thread = QThread(self)
         self._worker = CalculationWorker(worker_service, request, self._machine())
@@ -897,7 +905,6 @@ class MainWindow(QMainWindow):
     # Result display ------------------------------------------------------
     def _show_result(self, outcome: CalculationOutcome) -> None:
         self._current_outcome = outcome
-        self._original_result = outcome.result.copy()
         result = outcome.result
         family = tool_family(self.tool_combo.currentText())
         visible = {
@@ -909,26 +916,62 @@ class MainWindow(QMainWindow):
             "pre_ream_size_mm": family == "reamer",
             "tap_drill_mm": family == "tap",
         }
+        primary_visible: list[bool] = []
+        visible_cards: list[QFrame] = []
         for key, card in self.result_cards.items():
-            card.setVisible(visible.get(key, False) and getattr(result, key) is not None)
+            is_visible = visible.get(key, False) and getattr(result, key) is not None
+            card.setVisible(is_visible)
+            primary_visible.append(is_visible)
+            if is_visible:
+                visible_cards.append(card)
             value = getattr(result, key)
             if value is not None:
-                self.result_fields[key].setValue(float(value))
+                unit = str(self.result_fields[key].property("unit") or "")
+                self.result_fields[key].setText(self._format_value(float(value), unit))
+        for card in self.result_cards.values():
+            self.result_key_layout.removeWidget(card)
+        for index, card in enumerate(visible_cards):
+            self.result_key_layout.addWidget(card, index // 4, index % 4)
+        self.primary_group.setVisible(any(primary_visible))
 
-        self.info_labels["cutting_speed"].setText(self._format_value(result.cutting_speed_m_min, "m/min"))
-        self.info_labels["feed_per_tooth"].setText(self._format_value(result.feed_per_tooth_mm, "mm/tooth"))
-        self.info_labels["feed_per_rev"].setText(self._format_value(result.feed_per_rev_mm, "mm/rev"))
-        self.info_labels["pre_ream_range"].setText(result.pre_ream_range_mm or "—")
-        cycle = result.recommended_cycle or "—"
-        self.info_labels["cycle"].setText(cycle)
-        self.info_labels["coolant"].setText(result.coolant or "—")
-        self.info_labels["confidence"].setText(result.confidence.title())
+        secondary: dict[str, str | None] = {
+            "cutting_speed": self._format_value(result.cutting_speed_m_min, "m/min")
+            if result.cutting_speed_m_min is not None
+            else None,
+            "feed_per_tooth": self._format_value(result.feed_per_tooth_mm, "mm/tooth")
+            if family in {"end_mill", "indexable"} and result.feed_per_tooth_mm is not None
+            else None,
+            "feed_per_rev": self._format_value(result.feed_per_rev_mm, "mm/rev")
+            if family in {"drill", "reamer", "tap"} and result.feed_per_rev_mm is not None
+            else None,
+            "pre_ream_range": result.pre_ream_range_mm.strip()
+            if family == "reamer" and isinstance(result.pre_ream_range_mm, str) and result.pre_ream_range_mm.strip()
+            else None,
+            "cycle": result.recommended_cycle.strip()
+            if isinstance(result.recommended_cycle, str) and result.recommended_cycle.strip()
+            else None,
+            "coolant": result.coolant.strip() if result.coolant.strip() else None,
+            "confidence": result.confidence.strip().title() if result.confidence.strip() else None,
+        }
+        secondary_visible = [
+            self._set_optional_row(self.info_rows, key, value)
+            for key, value in secondary.items()
+        ]
+        self.info_group.setVisible(any(secondary_visible))
         self._show_derived_information(outcome, result, family)
 
-        all_notes = list(result.notes)
-        all_notes.extend(result.warnings)
+        all_notes = list(result.notes) + list(result.warnings)
         all_notes.extend(f"Local validation: {item}" for item in outcome.validation_corrections)
-        self.notes.setPlainText("\n".join(dict.fromkeys(all_notes)) or "No additional notes.")
+        notes: list[str] = []
+        seen_notes: set[str] = set()
+        for note in all_notes:
+            clean_note = str(note).strip()
+            key = clean_note.casefold()
+            if clean_note and key not in seen_notes:
+                seen_notes.add(key)
+                notes.append(clean_note)
+        self.notes.setPlainText("\n".join(notes))
+        self.notes_group.setVisible(bool(notes))
 
         if outcome.source == "mock":
             banner = "DEVELOPMENT MOCK RESULT — not cached or suitable as production data"
@@ -941,7 +984,6 @@ class MainWindow(QMainWindow):
         self.result_banner.setObjectName("resultBanner")
         self.result_banner.setText(banner)
         self.result_banner.setVisible(True)
-        self.save_preference_button.setEnabled(outcome.source != "mock")
         self.retry_button.setVisible(False)
         self._populate_debug(outcome)
 
@@ -1076,39 +1118,6 @@ class MainWindow(QMainWindow):
         else:
             text = f"{value:,.3f}".rstrip("0").rstrip(".")
         return f"{text} {suffix}"
-
-    def _result_from_controls(self) -> MachiningResult:
-        if self._original_result is None:
-            raise CalculationInputError("There is no result to save yet.")
-        result = self._original_result.copy()
-        for key, widget in self.result_fields.items():
-            if self.result_cards[key].isVisible():
-                setattr(result, key, widget.value())
-        return result
-
-    def _save_workshop_setting(self) -> None:
-        if not self._current_outcome:
-            return
-        try:
-            request = self._collect_request()
-            preferred = self._result_from_controls()
-            preferred, corrections = validate_and_correct_result(preferred, request, self._machine())
-            CalculationService(self.database, MockOpenAIService()).save_workshop_preference(self._current_outcome, preferred)
-        except Exception as exc:
-            self._show_error(str(exc))
-            return
-        self._original_result = preferred.copy()
-        self._show_result(
-            replace(
-                self._current_outcome,
-                result=preferred,
-                validation_corrections=list(self._current_outcome.validation_corrections) + corrections,
-                source="workshop",
-            )
-        )
-        self.result_banner.setText("SAVED WORKSHOP SETTING — this local recommendation will be used next time")
-        self.result_banner.setVisible(True)
-        self.result_status.setText("Workshop setting saved")
 
     def _populate_debug(self, outcome: CalculationOutcome) -> None:
         self.debug_editors["normalized"].setPlainText(json.dumps(outcome.normalized_request, indent=2, ensure_ascii=False, sort_keys=True))
@@ -1252,12 +1261,15 @@ def apply_styles(app: QApplication) -> None:
         QLabel#resultBanner { background: #e1f0f5; color: #205a6e; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
         QLabel#errorBanner { background: #fde0d8; color: #8a2d1d; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
         QFrame#inputPanel, QFrame#resultPanel { background: #ffffff; border: 1px solid #d7dde1; border-radius: 7px; }
+        QScrollArea#resultScroll, QWidget#resultContent { background: transparent; border: none; }
         QGroupBox { background: #ffffff; border: 1px solid #d5dbe1; border-left: 3px solid #CE1D1D; border-radius: 5px; margin-top: 9px; padding-top: 9px; }
         QGroupBox#primaryGroup { border-left: 4px solid #CE1D1D; background: #fbfcfd; }
         QGroupBox#secondaryGroup { border-left: 2px solid #c8d0d5; }
         QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #26323a; font-weight: 700; }
         QFrame#valueCard { background: #ffffff; border: 1px solid #d3dade; border-left: 4px solid #CE1D1D; border-radius: 5px; }
         QLabel#valueLabel { color: #51606b; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }
+        QLabel#resultValue { color: #17212b; font-size: 18pt; font-weight: 800; }
+        QLabel#infoValue { color: #17212b; font-weight: 600; }
         QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: 30px; }
         QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #CE1D1D; }
         QPushButton { min-height: 30px; padding: 3px 12px; }
@@ -1265,6 +1277,8 @@ def apply_styles(app: QApplication) -> None:
         QPushButton#calculateButton:hover { background: #a91616; }
         QPlainTextEdit { background: #fbfcfd; border: 1px solid #d5dbe1; }
         QListWidget { border: 1px solid #d5dbe1; border-radius: 5px; }
+        QListWidget::item { padding: 4px 8px; border-bottom: 1px solid #edf0f2; }
+        QListWidget::item:selected { background: #fbe3e3; color: #17212b; border-left: 3px solid #CE1D1D; }
         QTabBar::tab:selected { color: #CE1D1D; border-bottom: 2px solid #CE1D1D; }
         QSplitter::handle { background: #d5dbe1; }
         """

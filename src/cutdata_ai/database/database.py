@@ -15,6 +15,16 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit or roll back like sqlite3, then release the file handle."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class Database:
     """A small SQLite repository using short-lived connections.
 
@@ -28,7 +38,7 @@ class Database:
         self.initialise()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=15)
+        connection = sqlite3.connect(self.path, timeout=15, factory=_ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -353,4 +363,3 @@ class Database:
                     name,
                 ),
             )
-

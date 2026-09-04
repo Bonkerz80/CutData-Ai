@@ -31,7 +31,7 @@ from ..config.constants import (
     COMPANY_NAME,
     COMPANY_WEBSITE,
     DEFAULT_MODEL,
-    ICON_SVG_PATH,
+    WINDOWS_ICON_PATH,
     PRODUCT_DESCRIPTION,
     PRODUCT_TAGLINE,
     PUBLISHER_NAME,
@@ -126,7 +126,7 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"About {APP_NAME}")
-        self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
+        self.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
         self.setMinimumWidth(430)
 
         layout = QVBoxLayout(self)
@@ -184,7 +184,7 @@ class SettingsDialog(QDialog):
         self._connection_thread: QThread | None = None
         self._connection_worker: ConnectionTestWorker | None = None
         self.setWindowTitle("Settings")
-        self.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
+        self.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
         self.setMinimumSize(720, 650)
 
         layout = QVBoxLayout(self)

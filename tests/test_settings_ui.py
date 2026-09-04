@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.openai_service import MockOpenAIService, OpenAIService
 from src.cutdata_ai.services.settings_service import SecretStore, SettingsService
-from src.cutdata_ai.config.constants import APP_VERSION, COMPANY_NAME, ICON_SVG_PATH, PRODUCT_TAGLINE
+from src.cutdata_ai.config.constants import APP_VERSION, COMPANY_NAME, ICON_SVG_PATH, PRODUCT_TAGLINE, WINDOWS_ICON_PATH
 from src.cutdata_ai.services.normalization import normalize_request, request_hash
 from src.cutdata_ai.ui.dialogs import AboutDialog, ConnectionTestWorker, SettingsDialog
 from src.cutdata_ai.ui.main_window import MainWindow, normalise_window_state
@@ -232,5 +232,6 @@ def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_p
         assert "LOCALAPPDATA" not in text
         assert "secret" not in text.casefold()
         assert not QIcon(str(ICON_SVG_PATH)).isNull()
+        assert not QIcon(str(WINDOWS_ICON_PATH)).isNull()
     finally:
         close_widget(dialog, qapp)

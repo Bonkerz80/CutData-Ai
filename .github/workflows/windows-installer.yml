@@ -50,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: CutData-AI-Windows-Installer
-          path: installer/CutData-AI-Setup-0.1.5.exe
+          path: installer/CutData-AI-Setup-0.1.6.exe
           if-no-files-found: error
 
       - name: Publish tagged release
@@ -64,4 +64,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $tag --repo "${{ github.repository }}" --title "CutData AI $tag" --generate-notes
           }
-          gh release upload $tag "installer\CutData-AI-Setup-0.1.5.exe" --repo "${{ github.repository }}" --clobber
+          gh release upload $tag "installer\CutData-AI-Setup-0.1.6.exe" --repo "${{ github.repository }}" --clobber

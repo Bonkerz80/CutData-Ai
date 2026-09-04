@@ -36,6 +36,10 @@ PPT_HORIZONTAL_LOGO_PATH = PPT_ASSET_DIR / "ppt-horizontal-logo.png"
 PPT_FULL_LOGO_WHITE_PATH = PPT_ASSET_DIR / "ppt-full-logo-white.png"
 PPT_SYMBOL_PATH = PPT_ASSET_DIR / "ppt-symbol.png"
 PPT_LEGACY_ICON_PATH = PPT_ASSET_DIR / "ppt-cutdata.ico"
+# Windows-facing identity uses the official PPT/CutData artwork.  The
+# generated product artwork remains available as a source asset, but is not
+# used for the executable, shortcuts, or Qt application identity.
+WINDOWS_ICON_PATH = PPT_LEGACY_ICON_PATH
 
 
 def branding_asset(filename: str) -> Path:

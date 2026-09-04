@@ -13,7 +13,7 @@ from PySide6.QtCore import QTimer, qVersion
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
-from .cutdata_ai.config.constants import APP_NAME, ICON_SVG_PATH, PUBLISHER_NAME
+from .cutdata_ai.config.constants import APP_NAME, PUBLISHER_NAME, WINDOWS_ICON_PATH
 from .cutdata_ai.config.settings import default_data_dir
 from .cutdata_ai.database.database import Database
 from .cutdata_ai.ui.main_window import MainWindow, apply_styles
@@ -35,7 +35,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(PUBLISHER_NAME)
-    app.setWindowIcon(QIcon(str(ICON_SVG_PATH)))
+    app.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
     apply_styles(app)
     data_dir = Path(temporary_data.name) if temporary_data else default_data_dir()
     database = Database(data_dir / "cutdata_ai.sqlite3")

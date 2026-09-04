@@ -57,13 +57,11 @@ Before an API request, the application normalises the complete request and hashe
 
 Prompt or schema version changes intentionally invalidate older cache entries. A local saved workshop setting is kept separately from the original AI recommendation and takes priority for an exact repeat request.
 
-## Saved tools and recent calculations
+## Recent calculations
 
-Use **Save current tool** to save a tool definition as a named input preset. Selecting it later repopulates the relevant tool fields; it does not create machining advice or generalise a recommendation.
+Recent entries show the useful tool identity and operation details rather than timestamps. Double-click a recent calculation to reopen its exact inputs and result. Mock calculations are not persisted as production history. The existing saved-tool database table is retained for a later workflow redesign, but it is not exposed in this release.
 
-Double-click a recent calculation to reopen its inputs and result. Mock calculations are not persisted as production history.
-
-The complete calculator state is saved in the existing SQLite `app_settings` table. It includes machine/material context, custom material and hardness, the selected tool family, operation, model/reasoning/mock settings, and each tool-family page. State is saved on Calculate, family changes, saved-tool loading, and window close. Missing or malformed older state is ignored safely. The last window size and position are also restored when it intersects a current screen; off-screen geometry is clamped back into the available work area.
+The complete calculator state is saved in the existing SQLite `app_settings` table. It includes machine/material context, custom material and hardness, the selected tool family, operation, model/reasoning/mock settings, and each tool-family page. State is saved on Calculate, family changes, recent-calculation reopening, and window close. Missing or malformed older state is ignored safely. The last window size and position are also restored when it intersects a current screen; off-screen geometry is clamped back into the available work area.
 
 Results separate three kinds of information:
 
@@ -99,9 +97,9 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.1.5.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the PPT-branded product icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.1.6.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
-Version 0.1.5 keeps the OpenAI setup improvements from 0.1.2 and the architecture corrections from 0.1.3: live machining recommendations come from the selected AI model, while local code only validates deterministic arithmetic and hard machine limits. It adds a substantially stronger PPT/CutData AI visual system using the official legacy artwork, a full-width engineering header, red accent hierarchy, branded dialogs, a packaged multi-size Windows icon, complete calculator-state persistence, screen-safe window restoration, derived result information, and optional structured AI context fields. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. It also retains the 0.1.1 `ucnv_open` / `QtWidgets` startup fix. Windows 10 1809 or later (64-bit), or Windows 11, is required.
+Version 0.1.6 keeps the OpenAI setup improvements from 0.1.2 and the architecture corrections from 0.1.3: live machining recommendations come from the selected AI model, while local code only validates deterministic arithmetic and hard machine limits. It adds compact family-aware recent-calculation summaries, read-only primary results, applicable secondary and derived information, optional structured AI context fields, and a focused workshop workflow without the unused Slot Cutter, T-Slot Cutter, or Saved Tool controls. The official `src\cutdata_ai\assets\ppt\ppt-cutdata.ico` is the Windows product icon for the application, executable, installer, and shortcuts. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. It also retains the 0.1.1 `ucnv_open` / `QtWidgets` startup fix. Windows 10 1809 or later (64-bit), or Windows 11, is required.
 
 Builds isolate native dependency discovery from developer tools on PATH. Qt uses the Windows ICU library; copying another application's `icuuc.dll` into the application directory will break its ABI. Before an installer is compiled, the release gate checks every ICU function imported by Qt against Windows. The following additional check starts the actual packaged window with a clean environment and verifies the loaded ICU path:
 
@@ -116,7 +114,7 @@ src/
   main.py                         application entry point
   cutdata_ai/
     config/                       name, defaults, materials, paths
-    assets/                       PPT/CutData AI SVG, PNG, and Windows icon
+    assets/                       official PPT/CutData AI logos and Windows icon
     models/                       requests, results, strict response schema
     database/                     SQLite tables and repositories
     prompts/                      reusable machining system/user prompts

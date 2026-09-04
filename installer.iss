@@ -1,5 +1,5 @@
 #define MyAppName "CutData AI"
-#define MyAppVersion "0.1.5"
+#define MyAppVersion "0.1.6"
 #define MyAppPublisher "PPT"
 #define MyAppURL "https://www.ppt-eng.co.uk/"
 #define MyAppSupportURL "https://github.com/Bonkerz80/CutData-AI"
@@ -14,7 +14,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppSupportURL}
 AppUpdatesURL={#MyAppSupportURL}
-SetupIconFile=src\cutdata_ai\assets\cutdata_ai.ico
+SetupIconFile=src\cutdata_ai\assets\ppt\ppt-cutdata.ico
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
