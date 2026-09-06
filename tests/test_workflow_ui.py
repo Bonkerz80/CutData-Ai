@@ -4,19 +4,27 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QElapsedTimer, Qt
+from PySide6.QtGui import QFontDatabase
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QLabel, QPushButton
 
 from src.cutdata_ai.config.constants import TOOL_TYPES, compatible_tool_type, tool_family
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.models.domain import CalculationOutcome, MachiningResult
 from src.cutdata_ai.services.recent_summary import build_recent_summary, recent_item_text
-from src.cutdata_ai.ui.main_window import MainWindow
+from src.cutdata_ai.ui.main_window import MainWindow, apply_styles
 
 
 @pytest.fixture(scope="session")
 def qapp():
-    return QApplication.instance() or QApplication([])
+    application = QApplication.instance() or QApplication([])
+    if os.name == "nt":
+        # The offscreen platform does not discover Windows fonts on its own.
+        for font in ("segoeui.ttf", "segoeuib.ttf"):
+            QFontDatabase.addApplicationFont(f"C:/Windows/Fonts/{font}")
+    apply_styles(application)
+    return application
 
 
 @pytest.fixture
@@ -190,7 +198,7 @@ def test_drill_result_populates_secondary_derived_notes_and_read_only_values(win
     assert window.primary_group.isVisible()
     assert window.result_fields["rpm"].text() == "2,450 RPM"
     assert window.result_fields["feed_mm_min"].text() == "365 mm/min"
-    assert window.result_fields["peck_mm"].text() == "6 mm"
+    assert window.result_fields["peck_mm"].text() == "Q6 mm"
     assert all(isinstance(field, QLabel) for field in window.result_fields.values())
     assert not window.result_panel.findChildren(QDoubleSpinBox)
     assert window.info_group.isVisible()
@@ -337,3 +345,198 @@ def test_saved_tool_backend_data_survives_without_saved_tool_ui(window):
     assert not hasattr(window, "saved_tool_combo")
     assert not any(button.text() == "Save current tool" for button in window.findChildren(QPushButton))
     assert not any("Saved tool" in label.text() for label in window.findChildren(QLabel))
+
+
+@pytest.mark.parametrize(
+    ("tool_type", "primary", "secondary", "derived"),
+    [
+        ("Drill", {"rpm", "feed_mm_min", "peck_mm"},
+         {"cutting_speed", "feed_per_rev", "cycle", "coolant", "confidence"},
+         {"hole_ld_ratio", "rpm_usage", "feed_usage"}),
+        ("Reamer", {"rpm", "feed_mm_min", "pre_ream_size_mm"},
+         {"cutting_speed", "feed_per_rev", "pre_ream_range", "cycle", "coolant", "confidence"},
+         {"hole_ld_ratio", "rpm_usage", "feed_usage"}),
+        ("Tap", {"rpm", "feed_mm_min", "tap_drill_mm"},
+         {"cutting_speed", "feed_per_rev", "cycle", "coolant", "confidence"},
+         {"rpm_usage", "feed_usage", "tap_relationship"}),
+        ("End Mill", {"rpm", "feed_mm_min", "axial_doc_mm", "stepover_mm"},
+         {"cutting_speed", "feed_per_tooth", "coolant", "confidence"},
+         {"radial_engagement", "axial_doc_ratio", "mrr", "rpm_usage", "feed_usage"}),
+        ("Indexable End Mill", {"rpm", "feed_mm_min", "axial_doc_mm", "stepover_mm"},
+         {"cutting_speed", "feed_per_tooth", "coolant", "confidence"},
+         {"radial_engagement", "axial_doc_ratio", "mrr", "rpm_usage", "feed_usage"}),
+    ],
+)
+def test_startup_restores_family_with_complete_placeholder_display(
+    qapp, tmp_path, tool_type, primary, secondary, derived
+):
+    database = Database(tmp_path / "startup.sqlite3")
+    # Exercise actual startup and persisted selection, before any calculation.
+    database.set_setting("last_calculator_state", json.dumps({"global": {"tool_type": tool_type}}))
+    window = MainWindow(database)
+    window.show()
+    qapp.processEvents()
+    try:
+        assert window.tool_combo.currentText() == tool_type
+        assert window.result_status.text() == "Ready to calculate"
+        assert window.primary_group.isVisible()
+        assert window.info_group.isVisible()
+        assert window.derived_group.isVisible()
+        assert window.notes_group.isVisible()
+        assert not window.ai_context_group.isVisible()
+        assert window.notes.placeholderText() == "AI machining notes and warnings will appear here."
+        for fields, expected in (
+            (window.result_fields, primary),
+            (window.info_labels, secondary),
+            (window.derived_labels, derived),
+        ):
+            assert {key for key, widget in fields.items() if widget.isVisible()} == expected
+            assert all(fields[key].text() == "—" for key in expected)
+        assert not window.result_panel.findChildren(QDoubleSpinBox)
+        assert all(field.textInteractionFlags() & Qt.TextSelectableByMouse for field in window.result_fields.values())
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_tool_selection_immediately_replaces_old_results_with_family_placeholders(window, qapp):
+    fields = dict(window.result_fields)
+    window.tool_combo.setCurrentText("Drill")
+    assert window.result_cards["peck_mm"].isVisible()
+    assert window.result_fields["peck_mm"].text() == "—"
+    window._show_result(outcome(normalized_request("Drill", {}), MachiningResult(rpm=2450, feed_mm_min=365, peck_recommended=False)))
+
+    window.tool_combo.setCurrentText("End Mill")
+    qapp.processEvents()
+
+    assert window.result_fields == fields  # Reuse the existing read-only widgets.
+    assert window._current_outcome is None
+    assert not window.result_cards["peck_mm"].isVisible()
+    assert window.result_cards["axial_doc_mm"].isVisible()
+    assert window.result_cards["stepover_mm"].isVisible()
+    assert all(field.text() == "—" for field in fields.values())
+    assert window.info_labels["feed_per_tooth"].isVisible()
+    assert not window.info_labels["feed_per_rev"].isVisible()
+    assert not window.info_labels["pre_ream_range"].isVisible()
+    assert not window.derived_labels["hole_ld_ratio"].isVisible()
+    assert window.derived_labels["mrr"].isVisible()
+    assert not window.ai_context_group.isVisible()
+
+
+@pytest.mark.parametrize(
+    ("decision", "q", "text", "warning"),
+    [(True, 6, "Q6 mm", False), (True, 3.5, "Q3.5 mm", False),
+     (False, None, "NO PECK", False), (None, None, "NOT SPECIFIED", True),
+     (None, 6, "NOT SPECIFIED", True), (True, None, "NOT SPECIFIED", True)],
+)
+def test_peck_card_displays_all_decisions_and_preserves_stored_data(window, qapp, decision, q, text, warning):
+    result = MachiningResult(rpm=2450, feed_mm_min=365, peck_recommended=decision, peck_mm=q)
+    original = result.to_dict()
+    fields = dict(window.result_fields)
+    window._show_result(outcome(normalized_request("Drill", {}), result))
+    qapp.processEvents()
+
+    assert window.result_fields == fields
+    assert window.result_cards["peck_mm"].isVisible()
+    assert window.result_fields["peck_mm"].text() == text
+    assert bool(window.notes.toPlainText()) == warning
+    assert result.to_dict() == original
+    assert window.info_group.isVisible() and window.derived_group.isVisible()
+    assert window.info_labels["cycle"].isVisible()
+    assert window.info_labels["cycle"].text() == "—"
+    assert window.derived_labels["hole_ld_ratio"].isVisible()
+    assert window.derived_labels["hole_ld_ratio"].text() == "—"
+    assert not window.ai_context_group.isVisible()
+
+
+@pytest.mark.parametrize(("decision", "q", "text"), [(True, 6, "Q6 mm"), (False, None, "NO PECK"), (None, None, "NOT SPECIFIED")])
+def test_recent_double_click_restores_exact_peck_decision(window, qapp, decision, q, text):
+    normalized = normalized_request("Drill", {"diameter_mm": 22, "hole_depth_mm": 160})
+    payload = MachiningResult(rpm=2450, feed_mm_min=365, peck_recommended=decision, peck_mm=q).to_dict()
+    if decision is None:
+        payload.pop("peck_recommended")  # Pre-decision legacy history.
+    window.database.add_recent("exact-peck-record", normalized, payload, "ai")
+    window._load_recent()
+    window.tool_combo.setCurrentText("End Mill")
+    qapp.processEvents()
+    item = window.recent_list.item(0)
+    point = window.recent_list.visualItemRect(item).center()
+    QTest.mouseClick(window.recent_list.viewport(), Qt.LeftButton, pos=point)
+    QTest.mouseDClick(window.recent_list.viewport(), Qt.LeftButton, pos=point)
+    qapp.processEvents()
+
+    assert window.tool_combo.currentText() == "Drill"
+    assert window.result_fields["peck_mm"].isVisible()
+    assert window.result_fields["peck_mm"].text() == text
+    assert window._current_outcome.request_hash == "exact-peck-record"
+    assert json.loads(window.database.recent()[0]["result_json"]) == payload
+
+
+def test_result_population_keeps_core_group_positions_stable(window, qapp):
+    apply_styles(qapp)
+    qapp.processEvents()
+    groups = (window.primary_group, window.info_group, window.derived_group, window.notes_group)
+    before = [group.geometry() for group in groups]
+    cards = {key: card.geometry() for key, card in window.result_cards.items() if card.isVisible()}
+    normalized = normalized_request("Drill", {"diameter_mm": 22, "hole_depth_mm": 160})
+    for decision, q in ((True, 6), (False, None), (None, None)):
+        result = MachiningResult(rpm=2450, feed_mm_min=365, peck_recommended=decision, peck_mm=q,
+                                 cutting_speed_m_min=169.2, feed_per_rev_mm=0.149,
+                                 recommended_cycle="G83 peck cycle", coolant="Flood coolant", confidence="high")
+        window._show_result(outcome(normalized, result))
+        qapp.processEvents()
+        assert [group.geometry() for group in groups] == before
+        assert {key: window.result_cards[key].geometry() for key in cards} == cards
+
+
+def test_invalid_peck_response_uses_clean_retry_and_keeps_placeholder_display(window, qapp):
+    from tests.test_calculations import FakeAI
+
+    window.ai_service = FakeAI({"rpm": 800, "feed_mm_min": 80, "peck_recommended": True, "peck_mm": None})
+    window._calculate()
+    assert window.primary_group.isVisible() and window.notes_group.isVisible()
+    timer = QElapsedTimer()
+    timer.start()
+    while window._thread is not None and timer.elapsed() < 5000:
+        QTest.qWait(10)
+
+    assert window._thread is None
+    assert window.retry_button.isVisible()
+    assert "peck depth" in window.result_banner.text()
+    assert window.result_fields["peck_mm"].text() == "—"
+    assert window.result_fields["peck_mm"].isVisible()
+    assert window.info_group.isVisible() and window.derived_group.isVisible()
+    assert window.notes_group.isVisible()
+    assert not window.database.recent()
+
+
+def test_reamer_response_discards_peck_data_and_populates_debug(window, qapp):
+    from tests.test_calculations import FakeAI
+
+    window.tool_combo.setCurrentText("Reamer")
+    window.ai_service = FakeAI(
+        {
+            "rpm": 400,
+            "feed_mm_min": 40,
+            "feed_per_rev_mm": 0.1,
+            "peck_mm": 2,
+            "peck_recommended": True,
+            "recommended_cycle": "G83 peck cycle",
+        }
+    )
+    window._calculate()
+    timer = QElapsedTimer()
+    timer.start()
+    while window._thread is not None and timer.elapsed() < 5000:
+        QTest.qWait(10)
+
+    assert window._thread is None
+    assert not window.result_banner.text().startswith("Could not calculate")
+    assert window.debug_group.isVisible()
+    assert window.debug_button.isChecked()
+    assert '"tool_type": "reamer"' in window.debug_editors["normalized"].toPlainText()
+    assert window.debug_editors["prompt"].toPlainText() == "test prompt"
+    assert "G83 peck cycle" in window.debug_editors["raw"].toPlainText()
+    assert '"recommended_cycle": null' in window.debug_editors["validated"].toPlainText()
+    assert "continuous-feed reaming" in window.notes.toPlainText()

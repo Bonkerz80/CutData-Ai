@@ -48,6 +48,11 @@ from ..config.constants import (
     model_display_name,
     tool_family,
 )
+from ..config.operations import (
+    default_operation_for_tool,
+    is_legacy_operation,
+    operations_for_tool,
+)
 from ..config.settings import AppSettings
 from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
@@ -70,12 +75,14 @@ from ..services.openai_service import (
 from ..services.settings_service import SettingsService
 from ..services.recent_summary import recent_item_text
 from .dialogs import AboutDialog, SettingsDialog
+from .result_layout import peck_display, result_layout_for_family
+from .theme import apply_theme
 from .widgets import DrillPage, EndMillPage, FieldPage, IndexablePage, ReamerPage, TapPage, combo, double_spin
 
 
 class CalculationWorker(QObject):
     finished = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)
     done = Signal()
 
     def __init__(self, calculation_service: CalculationService, request: MachiningRequest, machine: MachineProfile):
@@ -91,7 +98,12 @@ class CalculationWorker(QObject):
             outcome = self.calculation_service.calculate(self.request, self.machine)
         except Exception as exc:  # surfaced as a clean status message
             if not self.cancelled:
-                self.failed.emit(str(exc))
+                self.failed.emit(
+                    {
+                        "message": str(exc),
+                        "context": dict(getattr(self.calculation_service, "last_failure_context", {}) or {}),
+                    }
+                )
         else:
             if not self.cancelled:
                 self.finished.emit(outcome)
@@ -135,6 +147,9 @@ class MainWindow(QMainWindow):
         self._debug_visible = False
         self._api_error = False
         self.ai_service = None
+        self._operation_by_tool: dict[str, str] = {}
+        self._active_tool_type = ""
+        apply_theme(QApplication.instance(), self.settings.appearance)
 
         self.setWindowTitle(f"{PUBLISHER_NAME} {APP_NAME} {APP_VERSION} — CNC Machining Calculator")
         self.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
@@ -258,10 +273,12 @@ class MainWindow(QMainWindow):
         form.setVerticalSpacing(10)
 
         self.machine_combo = QComboBox()
+        self._compact_combo(self.machine_combo)
         self._refresh_machine_profiles()
         form.addRow("Machine", self.machine_combo)
 
         self.material_combo = QComboBox()
+        self._compact_combo(self.material_combo)
         self.material_combo.addItems(list(MATERIALS))
         self.material_combo.setCurrentText(self.settings.last_material)
         self.material_combo.currentTextChanged.connect(self._update_material_fields)
@@ -275,6 +292,7 @@ class MainWindow(QMainWindow):
         form.addRow("Hardness HRC", self.hardness)
 
         self.tool_combo = QComboBox()
+        self._compact_combo(self.tool_combo)
         self.tool_combo.addItems(list(TOOL_TYPES))
         self.tool_combo.setCurrentText(self.settings.last_tool_type)
         self.tool_combo.currentTextChanged.connect(self._tool_changed)
@@ -285,6 +303,7 @@ class MainWindow(QMainWindow):
         page_scroll = QScrollArea()
         page_scroll.setWidgetResizable(True)
         page_scroll.setFrameShape(QFrame.NoFrame)
+        page_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.page_stack = QStackedWidget()
         self.pages: dict[str, FieldPage] = {
             "drill": DrillPage(),
@@ -295,6 +314,7 @@ class MainWindow(QMainWindow):
         }
         for page in self.pages.values():
             self.page_stack.addWidget(page)
+            page.operation_changed.connect(self._operation_changed)
         self._apply_last_coolant()
         page_scroll.setWidget(self.page_stack)
         outer.addWidget(page_scroll, 1)
@@ -322,6 +342,15 @@ class MainWindow(QMainWindow):
         outer.addLayout(actions)
         return panel
 
+    @staticmethod
+    def _compact_combo(widget: QComboBox) -> None:
+        """Allow form combos to shrink and let their popup show long values."""
+
+        widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        widget.setMinimumContentsLength(0)
+        widget.setMinimumWidth(0)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
     def _build_result_panel(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("resultPanel")
@@ -341,13 +370,13 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(result_scroll)
         self.result_scroll = result_scroll
 
-        self.result_status = QLabel("Enter the machining parameters, then calculate.")
+        self.result_status = QLabel("Ready to calculate")
         self.result_status.setObjectName("resultStatus")
         outer.addWidget(self.result_status)
         self.result_banner = QLabel()
         self.result_banner.setObjectName("resultBanner")
+        self.result_banner.setWordWrap(True)
         self.result_banner.setVisible(False)
-        outer.addWidget(self.result_banner)
 
         key_group = QGroupBox("Primary AI recommendation")
         key_group.setObjectName("primaryGroup")
@@ -355,7 +384,7 @@ class MainWindow(QMainWindow):
         key_layout.setContentsMargins(14, 14, 14, 14)
         key_layout.setHorizontalSpacing(12)
         key_layout.setVerticalSpacing(12)
-        key_layout.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        key_layout.setAlignment(Qt.AlignTop)
         self.primary_group = key_group
         self.result_key_layout = key_layout
         self.result_fields: dict[str, QLabel] = {}
@@ -364,8 +393,8 @@ class MainWindow(QMainWindow):
             ("rpm", "SPINDLE", "RPM"),
             ("feed_mm_min", "FEED", "mm/min"),
             ("axial_doc_mm", "DOC", "mm"),
-            ("stepover_mm", "STEPOVER", "mm"),
-            ("peck_mm", "PECK Q", "mm"),
+            ("stepover_mm", "WOC / STEPOVER", "mm"),
+            ("peck_mm", "PECK / Q", "mm"),
             ("pre_ream_size_mm", "PRE-REAM SIZE", "mm"),
             ("tap_drill_mm", "TAPPING DRILL", "mm"),
         ]
@@ -387,13 +416,13 @@ class MainWindow(QMainWindow):
             value.setMinimumHeight(42)
             value.setFont(QFont("Segoe UI", 16, QFont.Bold))
             value.setProperty("unit", suffix)
-            value.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            # Text must fill the existing card, not resize it as results arrive.
+            value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             card_layout.addWidget(small)
             card_layout.addWidget(value)
             self.result_fields[key] = value
             self.result_cards[key] = card
             key_layout.addWidget(card, index // 4, index % 4)
-        key_group.setVisible(False)
         outer.addWidget(key_group)
 
         info_group = QGroupBox("Secondary information")
@@ -417,15 +446,16 @@ class MainWindow(QMainWindow):
         ):
             label_widget = QLabel(label)
             label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-            value = QLabel()
+            value = QLabel("—")
             value.setObjectName("infoValue")
+            value.setWordWrap(True)
+            value.setMinimumHeight(24)
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.info_labels[key] = value
             self.info_rows[key] = (label_widget, value)
             row = len(self.info_rows) - 1
             info_layout.addWidget(label_widget, row, 0)
             info_layout.addWidget(value, row, 1)
-        info_group.setVisible(False)
         self.info_group = info_group
         outer.addWidget(info_group)
 
@@ -451,6 +481,7 @@ class MainWindow(QMainWindow):
             label_widget = QLabel(label)
             value = QLabel("—")
             value.setWordWrap(True)
+            value.setMinimumHeight(24)
             value.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self.derived_labels[key] = value
             self.derived_rows[key] = (label_widget, value)
@@ -458,7 +489,6 @@ class MainWindow(QMainWindow):
             row = len(self.derived_rows) - 1
             derived_layout.addWidget(label_widget, row, 0)
             derived_layout.addWidget(value, row, 1)
-        self.derived_group.setVisible(False)
         outer.addWidget(self.derived_group)
 
         self.ai_context_group = QGroupBox("AI context / estimates")
@@ -489,7 +519,6 @@ class MainWindow(QMainWindow):
             ai_context_layout.addWidget(label_widget, row, 0)
             ai_context_layout.addWidget(value, row, 1)
         self.ai_context_group.setVisible(False)
-        outer.addWidget(self.ai_context_group)
 
         notes_group = QGroupBox("Machining notes")
         notes_group.setObjectName("secondaryGroup")
@@ -497,11 +526,13 @@ class MainWindow(QMainWindow):
         self.notes = QPlainTextEdit()
         self.notes.setReadOnly(True)
         self.notes.setFixedHeight(72)
-        self.notes.setPlaceholderText("Notes and warnings will appear here.")
+        self.notes.setPlaceholderText("AI machining notes and warnings will appear here.")
         notes_layout.addWidget(self.notes)
         self.notes_group = notes_group
-        notes_group.setVisible(False)
         outer.addWidget(notes_group)
+        # Optional content follows the stable calculator display.
+        outer.addWidget(self.ai_context_group)
+        outer.addWidget(self.result_banner)
 
         buttons = QHBoxLayout()
         self.retry_button = QPushButton("Retry")
@@ -547,26 +578,36 @@ class MainWindow(QMainWindow):
         debug_layout.addWidget(self.debug_tabs)
         self.debug_group.setVisible(False)
         outer.addWidget(self.debug_group, 1)
+        outer.addStretch(1)
         return panel
 
     # Selection and persistence ------------------------------------------
     def _calculator_state_payload(self) -> dict[str, Any]:
-        family = tool_family(self.tool_combo.currentText())
+        active_tool = self._active_tool_type or self.tool_combo.currentText()
+        family = tool_family(active_tool)
         active_values = self.pages[family].values()
+        active_operation = active_values.get("operation", "")
+        if active_tool and active_operation:
+            self._operation_by_tool[active_tool] = str(active_operation)
+        current_tool = self.tool_combo.currentText()
+        current_operation = self._operation_by_tool.get(current_tool, "")
+        if current_tool.casefold() == active_tool.casefold():
+            current_operation = str(active_operation or current_operation)
         return {
-            "version": 1,
+            "version": 2,
             "global": {
                 "machine": self.machine_combo.currentText(),
                 "material": self.material_combo.currentText(),
                 "custom_material": self.custom_material.text().strip(),
                 "hardness_hrc": self.hardness.value(),
                 "tool_type": self.tool_combo.currentText(),
-                "operation": active_values.get("operation", ""),
+                "operation": current_operation,
                 "model": self.settings.model,
                 "reasoning_effort": self.settings.reasoning_effort,
                 "mock_mode": self.settings.mock_mode,
             },
             "families": {name: page.values() for name, page in self.pages.items()},
+            "operation_by_tool": dict(self._operation_by_tool),
         }
 
     def _save_calculator_state(self) -> None:
@@ -601,6 +642,14 @@ class MainWindow(QMainWindow):
             self.settings.mock_mode = mock_mode
         elif isinstance(mock_mode, str):
             self.settings.mock_mode = mock_mode.strip().casefold() in {"1", "true", "yes", "on"}
+
+        operation_by_tool = state.get("operation_by_tool", {})
+        if isinstance(operation_by_tool, dict):
+            self._operation_by_tool = {
+                str(tool): str(operation)
+                for tool, operation in operation_by_tool.items()
+                if isinstance(tool, str) and isinstance(operation, str) and operation.strip()
+            }
 
         self._set_combo_casefold(self.machine_combo, global_state.get("machine", ""))
         self._set_combo_casefold(self.material_combo, global_state.get("material", ""))
@@ -715,12 +764,53 @@ class MainWindow(QMainWindow):
             self._save_calculator_state()
         self._update_tool_page(value)
 
+    def _operation_changed(self, operation: str) -> None:
+        if not hasattr(self, "tool_combo"):
+            return
+        tool_type = self.tool_combo.currentText()
+        if tool_type and operation.strip():
+            self._operation_by_tool[tool_type] = operation.strip()
+        if not self._restoring_state:
+            self._save_calculator_state()
+
+    def _configure_operation_for_tool(self, tool_type: str) -> None:
+        family = tool_family(tool_type)
+        page = self.pages[family]
+        if "operation" not in page.fields:
+            self._active_tool_type = tool_type
+            return
+        previous_tool = self._active_tool_type
+        options = list(operations_for_tool(tool_type))
+        current = str(page.values().get("operation", ""))
+        remembered = self._operation_by_tool.get(tool_type, "")
+        if remembered:
+            target = remembered
+        elif previous_tool.casefold() == tool_type.casefold() and current:
+            target = current
+        elif self._restoring_state and is_legacy_operation(current):
+            target = current
+        else:
+            target = default_operation_for_tool(tool_type)
+        if target and not any(item.casefold() == target.casefold() for item in options) and is_legacy_operation(target):
+            # A legacy value is appended only when reopening old state/history.
+            options.append(target)
+        # The operation page is shared by several tool types. Set the active
+        # identity before changing its combo so the signal cannot save the
+        # newly selected tool's operation under the previous tool.
+        self._active_tool_type = tool_type
+        if options:
+            page.set_operation_options(tuple(options), target)
+            selected = str(page.values().get("operation", ""))
+            if selected:
+                self._operation_by_tool[tool_type] = selected
+
     def _update_tool_page(self, _value: str = "") -> None:
         if not hasattr(self, "tool_combo"):
             return
         tool_type = self.tool_combo.currentText()
         family = tool_family(tool_type)
         self.page_stack.setCurrentWidget(self.pages[family])
+        self._configure_operation_for_tool(tool_type)
         if family == "end_mill":
             ball_nose = "ball nose" in tool_type.casefold()
             bull_nose = "bull nose" in tool_type.casefold()
@@ -728,6 +818,8 @@ class MainWindow(QMainWindow):
             self.pages[family].set_field_visible("surface_finish_priority", ball_nose)
             self.pages[family].set_field_visible("ball_nose_contact", ball_nose)
             self.pages[family].set_field_visible("corner_radius_mm", bull_nose)
+        if hasattr(self, "result_fields"):
+            self._reset_result_display()
 
     def _machine(self) -> MachineProfile:
         return self.machine_profiles.get(
@@ -838,11 +930,8 @@ class MainWindow(QMainWindow):
         self._save_preferences(request)
         self._save_calculator_state()
         self._set_calculating(True)
+        self._reset_result_display()
         self.result_status.setText("Calculating machining parameters…")
-        self.result_banner.setVisible(False)
-        self.retry_button.setVisible(False)
-        self.notes.clear()
-        self.notes_group.setVisible(False)
         worker_service = CalculationService(self.database, ai_service)
         self._thread = QThread(self)
         self._worker = CalculationWorker(worker_service, request, self._machine())
@@ -876,8 +965,15 @@ class MainWindow(QMainWindow):
         self._set_calculating(False)
         self._update_status()
 
-    @Slot(str)
-    def _calculation_failed(self, message: str) -> None:
+    @Slot(object)
+    def _calculation_failed(self, message: object) -> None:
+        context: dict[str, Any] = {}
+        if isinstance(message, dict):
+            context = message.get("context", {}) if isinstance(message.get("context", {}), dict) else {}
+            message = str(message.get("message", "Calculation failed"))
+        else:
+            message = str(message)
+        self._populate_failure_debug(message, context)
         self._show_error(message)
         self.result_status.setText("Calculation could not be completed")
         if not self.settings.mock_mode and self.settings_service.get_api_key_source() != "none":
@@ -902,50 +998,107 @@ class MainWindow(QMainWindow):
         self.result_banner.style().unpolish(self.result_banner)
         self.result_banner.style().polish(self.result_banner)
 
+    def _populate_failure_debug(self, message: str, context: dict[str, Any]) -> None:
+        """Keep enough safe request/response context to diagnose a rejected run."""
+
+        normalized = context.get("normalized_request", {})
+        prompt = str(context.get("prompt", "") or "")
+        raw_response = str(context.get("raw_response", "") or "")
+        validated_response = str(context.get("validated_response", "") or "")
+        self.debug_editors["normalized"].setPlainText(
+            json.dumps(normalized, indent=2, ensure_ascii=False, sort_keys=True)
+            if normalized
+            else "(request was not normalized)"
+        )
+        self.debug_editors["prompt"].setPlainText(prompt or "(prompt was not generated)")
+        self.debug_editors["raw"].setPlainText(raw_response or "(no structured response was received)")
+        self.debug_editors["validated"].setPlainText(
+            validated_response
+            or f"(no validated response was produced)\n\nError:\n{message}"
+        )
+        metadata = {
+            "error": message,
+            "stage": context.get("stage", "unknown"),
+            "source": context.get("source", ""),
+            "request_hash": context.get("request_hash", ""),
+            "model": context.get("model", ""),
+            "response_id": context.get("response_id", ""),
+            "usage": context.get("usage", {}),
+        }
+        self.debug_editors["meta"].setPlainText(json.dumps(metadata, indent=2, ensure_ascii=False, sort_keys=True))
+        self.debug_button.setChecked(True)
+        self.debug_group.setVisible(True)
+
     # Result display ------------------------------------------------------
+    def _apply_result_layout(self, family: str) -> None:
+        layout = result_layout_for_family(family)
+        for key, card in self.result_cards.items():
+            self.result_key_layout.removeWidget(card)
+            card.setVisible(key in layout.primary)
+        for index, key in enumerate(layout.primary):
+            self.result_key_layout.addWidget(self.result_cards[key], 0, index)
+        for column in range(self.result_key_layout.columnCount()):
+            self.result_key_layout.setColumnStretch(column, 1 if column < len(layout.primary) else 0)
+        for rows, applicable in ((self.info_rows, layout.secondary), (self.derived_rows, layout.derived)):
+            for key, (label, value) in rows.items():
+                label.setVisible(key in applicable)
+                value.setVisible(key in applicable)
+        self.primary_group.setVisible(True)
+        self.info_group.setVisible(True)
+        self.derived_group.setVisible(True)
+        self.notes_group.setVisible(True)
+
+    def _reset_result_display(self) -> None:
+        self._current_outcome = None
+        self._apply_result_layout(tool_family(self.tool_combo.currentText()))
+        for values in (self.result_fields, self.info_labels, self.derived_labels, self.ai_context_labels):
+            for value in values.values():
+                value.setText("—")
+        self._set_peck_text("—")
+        self.result_status.setText("Ready to calculate")
+        self.result_banner.setVisible(False)
+        self.retry_button.setVisible(False)
+        self.ai_context_group.setVisible(False)
+        self.notes.clear()
+        self.notes.setPlaceholderText("AI machining notes and warnings will appear here.")
+        for editor in self.debug_editors.values():
+            editor.clear()
+
+    def _set_peck_text(self, text: str) -> None:
+        value = self.result_fields["peck_mm"]
+        value.setText(text)
+        value.setProperty("stateText", text in {"NO PECK", "NOT SPECIFIED"})
+        value.style().unpolish(value)
+        value.style().polish(value)
+
     def _show_result(self, outcome: CalculationOutcome) -> None:
         self._current_outcome = outcome
         result = outcome.result
         family = tool_family(self.tool_combo.currentText())
-        visible = {
-            "rpm": True,
-            "feed_mm_min": True,
-            "axial_doc_mm": family in {"end_mill", "indexable"},
-            "stepover_mm": family in {"end_mill", "indexable"},
-            "peck_mm": family == "drill" and result.peck_mm is not None,
-            "pre_ream_size_mm": family == "reamer",
-            "tap_drill_mm": family == "tap",
-        }
-        primary_visible: list[bool] = []
-        visible_cards: list[QFrame] = []
-        for key, card in self.result_cards.items():
-            is_visible = visible.get(key, False) and getattr(result, key) is not None
-            card.setVisible(is_visible)
-            primary_visible.append(is_visible)
-            if is_visible:
-                visible_cards.append(card)
+        self._apply_result_layout(family)
+        peck_warning = None
+        for key in self.result_cards:
             value = getattr(result, key)
-            if value is not None:
-                unit = str(self.result_fields[key].property("unit") or "")
-                self.result_fields[key].setText(self._format_value(float(value), unit))
-        for card in self.result_cards.values():
-            self.result_key_layout.removeWidget(card)
-        for index, card in enumerate(visible_cards):
-            self.result_key_layout.addWidget(card, index // 4, index % 4)
-        self.primary_group.setVisible(any(primary_visible))
+            if key == "stepover_mm" and value is None:
+                value = result.radial_doc_mm
+            unit = str(self.result_fields[key].property("unit") or "")
+            self.result_fields[key].setText(self._format_value(value, unit))
+        if family == "drill":
+            peck_text, peck_warning = peck_display(result)
+            self._set_peck_text(peck_text)
 
         secondary: dict[str, str | None] = {
             "cutting_speed": self._format_value(result.cutting_speed_m_min, "m/min")
             if result.cutting_speed_m_min is not None
             else None,
             "feed_per_tooth": self._format_value(result.feed_per_tooth_mm, "mm/tooth")
-            if family in {"end_mill", "indexable"} and result.feed_per_tooth_mm is not None
+            if result.feed_per_tooth_mm is not None
             else None,
             "feed_per_rev": self._format_value(result.feed_per_rev_mm, "mm/rev")
-            if family in {"drill", "reamer", "tap"} and result.feed_per_rev_mm is not None
+            if result.feed_per_rev_mm is not None
             else None,
             "pre_ream_range": result.pre_ream_range_mm.strip()
-            if family == "reamer" and isinstance(result.pre_ream_range_mm, str) and result.pre_ream_range_mm.strip()
+            if isinstance(result.pre_ream_range_mm, str) and result.pre_ream_range_mm.strip()
             else None,
             "cycle": result.recommended_cycle.strip()
             if isinstance(result.recommended_cycle, str) and result.recommended_cycle.strip()
@@ -953,14 +1106,15 @@ class MainWindow(QMainWindow):
             "coolant": result.coolant.strip() if result.coolant.strip() else None,
             "confidence": result.confidence.strip().title() if result.confidence.strip() else None,
         }
-        secondary_visible = [
-            self._set_optional_row(self.info_rows, key, value)
-            for key, value in secondary.items()
-        ]
-        self.info_group.setVisible(any(secondary_visible))
+        for key, value in secondary.items():
+            self.info_labels[key].setText(value or "—")
         self._show_derived_information(outcome, result, family)
 
         all_notes = list(result.notes) + list(result.warnings)
+        if peck_warning:
+            all_notes.append(peck_warning)
+        if "cycle" not in result_layout_for_family(family).secondary and result.recommended_cycle:
+            all_notes.append(f"Cycle / method: {result.recommended_cycle}")
         all_notes.extend(f"Local validation: {item}" for item in outcome.validation_corrections)
         notes: list[str] = []
         seen_notes: set[str] = set()
@@ -971,7 +1125,7 @@ class MainWindow(QMainWindow):
                 seen_notes.add(key)
                 notes.append(clean_note)
         self.notes.setPlainText("\n".join(notes))
-        self.notes_group.setVisible(bool(notes))
+        self.notes.setPlaceholderText("No machining notes or warnings were returned.")
 
         if outcome.source == "mock":
             banner = "DEVELOPMENT MOCK RESULT — not cached or suitable as production data"
@@ -986,6 +1140,8 @@ class MainWindow(QMainWindow):
         self.result_banner.setVisible(True)
         self.retry_button.setVisible(False)
         self._populate_debug(outcome)
+        if any("Incompatible Reamer peck data discarded locally" in item for item in outcome.validation_corrections):
+            self.debug_button.setChecked(True)
 
     @staticmethod
     def _parameter_number(parameters: dict[str, Any], *names: str) -> float | None:
@@ -1085,11 +1241,8 @@ class MainWindow(QMainWindow):
                 tap_parts.append(f"feed {result.feed_mm_min:g} mm/min")
             derived["tap_relationship"] = " · ".join(tap_parts) or None
 
-        derived_visible = [
-            self._set_optional_row(self.derived_rows, key, value)
-            for key, value in derived.items()
-        ]
-        self.derived_group.setVisible(any(derived_visible))
+        for key, value in derived.items():
+            self.derived_labels[key].setText(value or "—")
 
         torque = result.estimated_spindle_torque_nm
         if torque is None:
@@ -1154,6 +1307,7 @@ class MainWindow(QMainWindow):
         """Apply saved settings immediately, including the active AI service."""
 
         self.settings = self.settings_service.load()
+        apply_theme(QApplication.instance(), self.settings.appearance)
         self._api_error = False
         self._refresh_machine_profiles()
         self._reload_ai_service()
@@ -1213,73 +1367,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def apply_styles(app: QApplication) -> None:
-    app.setStyle("Fusion")
-    app.setStyleSheet(
-        """
-        QWidget { font-family: 'Segoe UI'; font-size: 10pt; }
-        QMainWindow, QDialog { background: #f3f5f7; }
-        QFrame#brandHeader { background: #1B2228; border: 1px solid #313b43; border-radius: 7px; }
-        QFrame#brandRule { background: #CE1D1D; border: none; }
-        QFrame#pptBrandBlock { background: #CE1D1D; border-radius: 5px; }
-        QFrame#pptLogoSurface { background: #ffffff; border-radius: 3px; }
-        QLabel#pptCompanyName { color: #ffffff; font-size: 8pt; font-weight: 700; letter-spacing: 0.5px; }
-        QLabel#headerProduct { color: #ffffff; font-size: 21pt; font-weight: 700; }
-        QLabel#headerTagline { color: #cbd2d7; font-size: 9pt; font-weight: 500; }
-        QFrame#dialogBrandHeader { background: #1B2228; border: 1px solid #313b43; border-radius: 6px; }
-        QFrame#dialogLogoSurface { background: #ffffff; border-radius: 3px; }
-        QLabel#dialogPublisher { color: #f4b2b2; font-size: 8pt; font-weight: 800; letter-spacing: 2px; }
-        QLabel#dialogTitle { color: #ffffff; font-size: 18pt; font-weight: 700; }
-        QLabel#dialogSubtitle { color: #cbd2d7; font-size: 9pt; }
-        QFrame#dialogIdentityCard { background: #ffffff; border: 1px solid #d7dde1; border-left: 4px solid #CE1D1D; border-radius: 5px; }
-        QLabel#dialogIdentityPublisher { color: #CE1D1D; font-size: 8pt; font-weight: 800; letter-spacing: 2px; }
-        QLabel#dialogIdentityProduct { color: #17212b; font-size: 16pt; font-weight: 700; }
-        QLabel#dialogIdentityVersion { color: #66727d; font-size: 9pt; font-weight: 600; }
-        QGroupBox#dialogPrimaryGroup { border-left: 4px solid #CE1D1D; }
-        QGroupBox#dialogSecondaryGroup { border-left: 2px solid #c8d0d5; }
-        QLabel#hint { color: #66727d; }
-        QLabel#formHeading { color: #CE1D1D; font-size: 9pt; font-weight: 800; letter-spacing: 1px; padding-top: 5px; }
-        QLabel#statusBadge, QLabel#readyBadge, QLabel#mockBadge, QLabel#warningBadge, QLabel#errorBadge { padding: 7px 12px; border-radius: 14px; font-weight: 700; }
-        QLabel#readyBadge { background: #d9f1e4; color: #17643a; }
-        QLabel#mockBadge { background: #fff0bd; color: #765b00; }
-        QLabel#warningBadge { background: #fde0d8; color: #8a2d1d; }
-        QLabel#errorBadge { background: #b3261e; color: #ffffff; }
-        QLabel#apiStatusNotice { background: #fff0bd; color: #765b00; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
-        QPushButton#modeSwitch { background: #fff0bd; color: #765b00; border: 1px solid #e2b94e; border-radius: 6px; font-weight: 700; }
-        QPushButton#modeSwitch:checked { background: #fff0bd; color: #765b00; }
-        QPushButton#modeSwitch:!checked { background: #d9f1e4; color: #17643a; border-color: #8bc6a2; }
-        QPushButton#modeSwitch:hover { border: 2px solid #CE1D1D; }
-        QPushButton#headerButton { background: #2a333a; color: #ffffff; border: 1px solid #56616a; border-radius: 5px; font-weight: 700; padding: 4px 11px; }
-        QPushButton#headerButton:hover { background: #3a464f; border-color: #ffffff; }
-        QPushButton#secondaryAction { background: #2f3a43; color: white; font-weight: 700; }
-        QPushButton#secondaryAction:hover { background: #1B2228; border-color: #CE1D1D; }
-        QLabel#statusLabel, QLabel#statusValue { color: #17212b; }
-        QLabel#statusValue { font-weight: 600; }
-        QLabel#connectionSuccess { color: #17643a; font-weight: 700; }
-        QLabel#connectionWarning { color: #8a2d1d; font-weight: 700; }
-        QLabel#resultStatus { color: #4c5965; font-size: 11pt; }
-        QLabel#resultBanner { background: #e1f0f5; color: #205a6e; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
-        QLabel#errorBanner { background: #fde0d8; color: #8a2d1d; padding: 8px 12px; border-radius: 5px; font-weight: 600; }
-        QFrame#inputPanel, QFrame#resultPanel { background: #ffffff; border: 1px solid #d7dde1; border-radius: 7px; }
-        QScrollArea#resultScroll, QWidget#resultContent { background: transparent; border: none; }
-        QGroupBox { background: #ffffff; border: 1px solid #d5dbe1; border-left: 3px solid #CE1D1D; border-radius: 5px; margin-top: 9px; padding-top: 9px; }
-        QGroupBox#primaryGroup { border-left: 4px solid #CE1D1D; background: #fbfcfd; }
-        QGroupBox#secondaryGroup { border-left: 2px solid #c8d0d5; }
-        QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 5px; color: #26323a; font-weight: 700; }
-        QFrame#valueCard { background: #ffffff; border: 1px solid #d3dade; border-left: 4px solid #CE1D1D; border-radius: 5px; }
-        QLabel#valueLabel { color: #51606b; font-size: 9pt; font-weight: 700; letter-spacing: 1px; }
-        QLabel#resultValue { color: #17212b; font-size: 18pt; font-weight: 800; }
-        QLabel#infoValue { color: #17212b; font-weight: 600; }
-        QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: 30px; }
-        QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus, QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #CE1D1D; }
-        QPushButton { min-height: 30px; padding: 3px 12px; }
-        QPushButton#calculateButton { background: #CE1D1D; color: white; border: 1px solid #a91616; font-weight: 800; font-size: 12pt; border-radius: 5px; }
-        QPushButton#calculateButton:hover { background: #a91616; }
-        QPlainTextEdit { background: #fbfcfd; border: 1px solid #d5dbe1; }
-        QListWidget { border: 1px solid #d5dbe1; border-radius: 5px; }
-        QListWidget::item { padding: 4px 8px; border-bottom: 1px solid #edf0f2; }
-        QListWidget::item:selected { background: #fbe3e3; color: #17212b; border-left: 3px solid #CE1D1D; }
-        QTabBar::tab:selected { color: #CE1D1D; border-bottom: 2px solid #CE1D1D; }
-        QSplitter::handle { background: #d5dbe1; }
-        """
-    )
+def apply_styles(app: QApplication, appearance: str = "light") -> None:
+    """Backward-compatible styling entry point used by the test harness."""
+
+    apply_theme(app, appearance)

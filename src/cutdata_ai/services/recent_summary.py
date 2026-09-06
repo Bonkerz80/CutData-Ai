@@ -117,6 +117,63 @@ def _operation(parameters: Mapping[str, Any], request: Mapping[str, Any]) -> str
     return _phrase(parameters.get("operation") or request.get("operation"))
 
 
+def _milling_detail(
+    operation: str,
+    parameters: Mapping[str, Any],
+    *,
+    include_insert_details: bool = False,
+) -> list[str]:
+    """Use operation-specific workshop labels while retaining old summaries."""
+
+    axial = _number(parameters, "axial_doc_mm")
+    radial = _number(parameters, "radial_doc_mm")
+    stock = _number(parameters, "stock_remaining_mm")
+    details: list[str] = []
+    key = operation.casefold()
+    if key == "roughing waterline":
+        if axial is not None:
+            details.append(f"{_fmt(axial)} mm depth step")
+        if radial is not None:
+            details.append(f"{_fmt(radial)} mm radial engagement / stepover")
+        if stock is not None:
+            details.append(f"{_fmt(stock)} mm stock remaining / stock to leave")
+    elif key == "face milling":
+        if axial is not None:
+            details.append(f"{_fmt(axial)} mm depth of cut")
+        if radial is not None:
+            details.append(f"{_fmt(radial)} mm step / width of cut")
+    elif key == "finishing waterline":
+        if axial is not None:
+            details.append(f"{_fmt(axial)} mm Z step / finishing step")
+        if stock is not None:
+            details.append(f"{_fmt(stock)} mm stock remaining")
+    elif key == "finishing plane":
+        if radial is not None:
+            details.append(f"{_fmt(radial)} mm stepover")
+        if stock is not None:
+            details.append(f"{_fmt(stock)} mm stock remaining")
+    elif key == "flat land finishing":
+        if radial is not None:
+            details.append(f"{_fmt(radial)} mm stepover")
+        if stock is not None:
+            details.append(f"{_fmt(stock)} mm finishing stock / stock remaining")
+    else:
+        if axial is not None:
+            details.append(f"{_fmt(axial)} mm DOC")
+        if radial is not None:
+            details.append(f"{_fmt(radial)} mm WOC")
+        if stock is not None:
+            details.append(f"{_fmt(stock)} mm stock")
+    if include_insert_details:
+        code = _identifier(parameters.get("insert_code"))
+        grade = _identifier(parameters.get("insert_grade"))
+        if code and grade:
+            details.append(f"{code} / {grade}")
+        elif code or grade:
+            details.append(code or grade)
+    return details
+
+
 def _flute_text(parameters: Mapping[str, Any]) -> str:
     count = _number(parameters, "flute_count", "insert_count")
     if count is None:
@@ -214,30 +271,11 @@ def _detail(request: Mapping[str, Any], parameters: Mapping[str, Any], family: s
     elif family == "indexable":
         if operation:
             details.append(operation)
-        axial = _number(parameters, "axial_doc_mm")
-        radial = _number(parameters, "radial_doc_mm")
-        if axial is not None:
-            details.append(f"{_fmt(axial)} mm DOC")
-        if radial is not None:
-            details.append(f"{_fmt(radial)} mm WOC")
-        code = _identifier(parameters.get("insert_code"))
-        grade = _identifier(parameters.get("insert_grade"))
-        if code and grade:
-            details.append(f"{code} / {grade}")
-        elif code or grade:
-            details.append(code or grade)
+        details.extend(_milling_detail(operation, parameters, include_insert_details=True))
     else:
         if operation:
             details.append(operation)
-        axial = _number(parameters, "axial_doc_mm")
-        radial = _number(parameters, "radial_doc_mm")
-        stock = _number(parameters, "stock_remaining_mm")
-        if axial is not None:
-            details.append(f"{_fmt(axial)} mm DOC")
-        if radial is not None:
-            details.append(f"{_fmt(radial)} mm WOC")
-        if stock is not None:
-            details.append(f"{_fmt(stock)} mm stock")
+        details.extend(_milling_detail(operation, parameters))
 
     return " · ".join(details)
 

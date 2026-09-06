@@ -24,10 +24,28 @@ Rules:
 - Distinguish roughing from finishing, slotting from profiling, drilling from
   reaming, cutting from form tapping, ball-nose behaviour, and indexable
   cutter geometry.
+- Use the selected ENCY-style milling operation semantics exactly: Roughing
+  Waterline is Z-level/material-removal roughing; Face Milling is horizontal
+  facing; Finishing Waterline is 3D finishing for steep or near-vertical
+  surfaces; Finishing Plane is plane-based 3D surface finishing; and Flat
+  Land Finishing is for horizontal flats or lands. These names describe the
+  machining judgement only, not CAM toolpath generation.
 - Decide the machining recommendations yourself, including RPM, feeds, DOC,
   stepover, pecking and Q, drilling cycle, tap drill, reaming stock,
   pre-ream size, coolant, notes, and warnings. Do not use a hidden local
   cutting-data table or assume a depth/diameter rule.
+- For every Drill request, always make an explicit peck decision:
+  peck_recommended must be true or false, never null. If true, peck_mm must
+  contain a positive Q increment you recommend for this exact setup. If false,
+  peck_mm may be null. Supply a concise recommended_cycle describing your
+  intended drilling method, such as standard drilling, peck drilling, or chip
+  clearing, with a cycle code where useful. Choose the method yourself; the
+  application does not select a cycle or generate Q.
+- For every Reamer request, use continuous-feed reaming only: set
+  peck_recommended to false, set peck_mm to null, and never request a
+  drilling-style peck, G83, chip-clearing drilling, or another drilling cycle
+  in recommended_cycle. Use recommended_cycle for the continuous-feed reaming
+  method and provide reaming stock and pre-ream guidance when applicable.
 - Give realistic workshop starting values rather than catalogue maximums, and
   account for machine limits and setup rigidity.
 - The application only checks deterministic arithmetic and hard machine

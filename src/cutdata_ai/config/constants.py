@@ -30,8 +30,8 @@ from .branding import (
 )
 
 
-APP_VERSION = "0.1.6"
-PROMPT_VERSION = "2026-09-03.2"
+APP_VERSION = "0.1.8"
+PROMPT_VERSION = "2026-09-05.2"
 SCHEMA_VERSION = "2"
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "medium"

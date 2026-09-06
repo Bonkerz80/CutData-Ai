@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QPushButton,
     QScrollArea,
+    QApplication,
     QWidget,
 )
 
@@ -40,7 +41,7 @@ from ..config.constants import (
     SUPPORTED_MODELS,
     model_display_name,
 )
-from ..config.settings import AppSettings
+from ..config.settings import AppSettings, normalise_appearance
 from ..database.database import Database
 from ..services.openai_service import (
     ConnectionTestResult,
@@ -48,7 +49,8 @@ from ..services.openai_service import (
     connection_result_for_exception,
 )
 from ..services.settings_service import SettingsService
-from .widgets import ModeSwitch
+from .theme import apply_theme
+from .widgets import AppearanceSwitch, ModeSwitch
 
 
 class ConnectionTestWorker(QObject):
@@ -180,6 +182,8 @@ class SettingsDialog(QDialog):
         self.database = database
         self.settings_service = SettingsService(database)
         self.settings = settings
+        self._original_appearance = normalise_appearance(settings.appearance)
+        self._theme_saved = False
         self._clear_requested = False
         self._connection_thread: QThread | None = None
         self._connection_worker: ConnectionTestWorker | None = None
@@ -190,7 +194,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
-        layout.addWidget(_dialog_brand_header("Settings", "OpenAI engine and workshop limits"))
+        layout.addWidget(_dialog_brand_header("Settings", "Appearance, OpenAI engine and workshop limits"))
 
         settings_scroll = QScrollArea()
         settings_scroll.setObjectName("settingsScroll")
@@ -203,6 +207,25 @@ class SettingsDialog(QDialog):
         settings_content_layout.setSpacing(10)
         settings_scroll.setWidget(settings_content)
         layout.addWidget(settings_scroll, 1)
+
+        appearance_group = QGroupBox("Appearance")
+        appearance_group.setObjectName("dialogPrimaryGroup")
+        appearance_layout = QVBoxLayout(appearance_group)
+        appearance_heading = QLabel("APPLICATION APPEARANCE")
+        appearance_heading.setObjectName("formHeading")
+        appearance_layout.addWidget(appearance_heading)
+        appearance_row = QWidget()
+        appearance_row_layout = QHBoxLayout(appearance_row)
+        appearance_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.appearance_switch = AppearanceSwitch(self._original_appearance)
+        appearance_hint = QLabel("Preview the complete calculator and its dialogs. The choice is saved with Settings.")
+        appearance_hint.setObjectName("hint")
+        appearance_hint.setWordWrap(True)
+        appearance_row_layout.addWidget(self.appearance_switch)
+        appearance_row_layout.addWidget(appearance_hint, 1)
+        appearance_layout.addWidget(appearance_row)
+        self.appearance_switch.toggled.connect(self._preview_appearance)
+        settings_content_layout.addWidget(appearance_group)
 
         api_group = QGroupBox("OpenAI")
         api_group.setObjectName("dialogPrimaryGroup")
@@ -305,8 +328,21 @@ class SettingsDialog(QDialog):
         self.dialog_buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.dialog_buttons.button(QDialogButtonBox.Save).setText("SAVE SETTINGS")
         self.dialog_buttons.accepted.connect(self._save)
-        self.dialog_buttons.rejected.connect(self.reject)
+        self.dialog_buttons.rejected.connect(self._cancel)
         layout.addWidget(self.dialog_buttons)
+
+    def _preview_appearance(self, _dark: bool) -> None:
+        self.settings.appearance = self.appearance_switch.appearance
+        apply_theme(QApplication.instance(), self.settings.appearance)
+
+    def _restore_appearance(self) -> None:
+        if not self._theme_saved:
+            self.settings.appearance = self._original_appearance
+            apply_theme(QApplication.instance(), self._original_appearance)
+
+    def _cancel(self) -> None:
+        self._restore_appearance()
+        self.reject()
 
     def _environment_key_available(self) -> bool:
         return self.settings_service.get_api_key_status().environment_detected
@@ -432,12 +468,14 @@ class SettingsDialog(QDialog):
 
         self.settings.model = self.model.currentText()
         self.settings.reasoning_effort = self.reasoning.currentText()
+        self.settings.appearance = self.appearance_switch.appearance
         self.settings.mock_mode = self.mock_mode.isChecked()
         self.settings_service.save(self.settings)
         if getattr(self, "_clear_requested", False):
             self.settings_service.clear_saved_api_key()
         elif self.api_key.text().strip():
             self.settings_service.save_api_key(self.api_key.text())
+        self._theme_saved = True
         self.accept()
 
     def closeEvent(self, event) -> None:
@@ -445,4 +483,5 @@ class SettingsDialog(QDialog):
             self.connection_status.setText("Wait for the connection test to finish before closing Settings.")
             event.ignore()
             return
+        self._restore_appearance()
         super().closeEvent(event)

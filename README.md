@@ -28,6 +28,8 @@ py -3 -m src.main
 
 If no API key is configured on first run, the application opens in clearly labelled development/mock mode. The Settings switch lets you choose MOCK MODE ON or LIVE AI MODE without restarting. Mock results are useful for exercising the complete interface but are never written to the production cache.
 
+Settings also provides a complete Light / Dark appearance toggle. Light is the default for existing installations; the selected appearance is previewed immediately, restored on Cancel, and persisted in the existing SQLite settings store on Save. It applies to the calculator, read-only result cards, forms, recent list, scrollbars, menus, Settings, About, debug views, banners, badges, selections, and tooltips.
+
 ## OpenAI configuration
 
 The default model is `gpt-5.6-luna` with medium reasoning effort. Both can be changed in Settings.
@@ -69,7 +71,13 @@ Results separate three kinds of information:
 - **Derived data** — display-only L/D, engagement, DOC ratios, material-removal rate, machine-limit usage, and tapping relationships calculated from known inputs/results.
 - **AI context / estimates** — optional model-provided engagement description, setup risk, recommendation summary, spindle power, and spindle torque. Torque can be displayed from the model's power estimate using `9550 × kW ÷ RPM` when torque is not supplied.
 
+Primary cards, applicable secondary and derived rows, and machining notes are visible from startup. Selecting a different tool immediately selects its display layout and clears old values to `—`. Calculations populate those same read-only widgets. AI context appears only when supplied, below the stable calculator display.
+
+The Drill **PECK / Q** card stays visible: `—` before calculation, `Q6 mm` (for example) for an explicit positive AI decision, `NO PECK` for an explicit negative decision, and `NOT SPECIFIED` with a warning for a missing decision. The drilling prompt requires a decision and an intended drilling method; Reamer prompts explicitly require continuous-feed reaming with no peck or drilling cycle. A positive drilling decision without a finite, positive Q is rejected with the existing retry/error handling. If a model still returns peck or drilling-cycle fields for a Reamer, those inapplicable fields are discarded locally and surfaced as a warning; they are never used to create a cycle. Older recent calculations remain readable. Prompt version `2026-09-05.2` invalidates older prompt cache entries; structured schema version `2` is unchanged.
+
 The forms capture context that materially changes a recommendation, including drill chip evacuation, reaming allowance where known, cutter corner radius and ball-nose contact, setup rigidity, toolholder type, tap type, and indexable insert/cutter details. These values are sent as request context; they are not local cutting-data tables or hidden heuristics.
+
+Milling operation names use the ENCY-style workshop vocabulary: **Roughing Waterline**, **Face Milling**, **Finishing Waterline**, **Finishing Plane**, and **Flat Land Finishing**. End Mill exposes all five; Ball Nose exposes Roughing Waterline, Finishing Waterline, and Finishing Plane; Bull Nose adds Flat Land Finishing; Face Mill exposes Face Milling; and Indexable End Mill exposes Roughing Waterline, Face Milling, and Flat Land Finishing. Thread Mill and drilling, reaming, and tapping workflows retain their existing operation behaviour. Older generic milling labels remain readable when reopening saved state/history and are never silently remapped.
 
 ## Tests
 
@@ -97,9 +105,9 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.1.6.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.1.8.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
-Version 0.1.6 keeps the OpenAI setup improvements from 0.1.2 and the architecture corrections from 0.1.3: live machining recommendations come from the selected AI model, while local code only validates deterministic arithmetic and hard machine limits. It adds compact family-aware recent-calculation summaries, read-only primary results, applicable secondary and derived information, optional structured AI context fields, and a focused workshop workflow without the unused Slot Cutter, T-Slot Cutter, or Saved Tool controls. The official `src\cutdata_ai\assets\ppt\ppt-cutdata.ico` is the Windows product icon for the application, executable, installer, and shortcuts. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. It also retains the 0.1.1 `ucnv_open` / `QtWidgets` startup fix. Windows 10 1809 or later (64-bit), or Windows 11, is required.
+Version 0.1.8 adds the complete Light / Dark theme system, live theme preview and persistence, ENCY-style milling operation vocabulary, operation-specific labels/fields, per-tool last-used operations, and legacy operation reopening. It preserves the 0.1.7 startup display with stable tool-family placeholders and a permanent drilling PECK / Q card, compact recent-calculation summaries, read-only results, PPT branding, saved calculator state, exact caching, workshop preferences, and the focused workflow without Slot Cutter, T-Slot Cutter, or Saved Tool controls. The official `src\cutdata_ai\assets\ppt\ppt-cutdata.ico` remains the Windows product icon. Live machining recommendations come from the selected AI model; local code validates structure, deterministic arithmetic, and hard machine limits. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. The `ucnv_open` / `QtWidgets` startup fix is retained. Windows 10 1809 or later (64-bit), or Windows 11, is required.
 
 Builds isolate native dependency discovery from developer tools on PATH. Qt uses the Windows ICU library; copying another application's `icuuc.dll` into the application directory will break its ABI. Before an installer is compiled, the release gate checks every ICU function imported by Qt against Windows. The following additional check starts the actual packaged window with a clean environment and verifies the loaded ICU path:
 

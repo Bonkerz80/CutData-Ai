@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 from .cutdata_ai.config.constants import APP_NAME, PUBLISHER_NAME, WINDOWS_ICON_PATH
 from .cutdata_ai.config.settings import default_data_dir
 from .cutdata_ai.database.database import Database
+from .cutdata_ai.services.settings_service import SettingsService
 from .cutdata_ai.ui.main_window import MainWindow, apply_styles
 
 
@@ -32,13 +33,14 @@ def main() -> int:
         except Exception:
             # The icon still works when this optional Windows taskbar hint is unavailable.
             pass
+    data_dir = Path(temporary_data.name) if temporary_data else default_data_dir()
+    database = Database(data_dir / "cutdata_ai.sqlite3")
+    appearance = SettingsService(database).load().appearance
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(PUBLISHER_NAME)
     app.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
-    apply_styles(app)
-    data_dir = Path(temporary_data.name) if temporary_data else default_data_dir()
-    database = Database(data_dir / "cutdata_ai.sqlite3")
+    apply_styles(app, appearance)
     window = MainWindow(database)
     window.show()
     if startup_report:

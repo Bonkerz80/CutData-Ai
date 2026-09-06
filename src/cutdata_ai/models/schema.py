@@ -98,6 +98,18 @@ def _number(value: Any, field_name: str) -> float | None:
     return number
 
 
+def validate_drilling_peck(result: MachiningResult) -> None:
+    """Reject an incomplete positive decision without choosing Q locally."""
+
+    decision = result.peck_recommended
+    if decision is not None and not isinstance(decision, bool):
+        raise StructuredResponseError("Peck recommendation must be boolean or null")
+    if decision is True:
+        peck = _number(result.peck_mm, "peck_mm")
+        if peck is None or peck <= 0:
+            raise StructuredResponseError("Pecking was recommended but no positive peck depth was provided")
+
+
 def result_from_dict(payload: dict[str, Any]) -> MachiningResult:
     """Convert a strict-schema object and reject missing/invalid core data."""
 

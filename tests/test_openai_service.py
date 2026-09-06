@@ -34,6 +34,16 @@ def test_responses_api_uses_strict_json_schema_and_reasoning():
     assert format_spec["type"] == "json_schema"
     assert format_spec["strict"] is True
     assert format_spec["schema"] == MACHINING_RESULT_SCHEMA
+    instructions = client.responses.kwargs["input"][0]["content"][0]["text"]
+    assert "peck_recommended must be true or false, never null" in instructions
+    assert "Roughing\n  Waterline is Z-level/material-removal roughing" in instructions
+    assert "Flat\n  Land Finishing is for horizontal flats or lands" in instructions
+    assert "positive Q increment" in instructions
+    assert "recommended_cycle" in instructions
+    assert "For every Reamer request" in instructions
+    assert "peck_recommended to false" in instructions
+    assert "never request a\n  drilling-style peck" in instructions
+    assert "drilling-family" not in instructions
 
 
 def test_connection_test_retrieves_selected_model_without_creating_response():

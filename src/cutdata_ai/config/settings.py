@@ -9,6 +9,17 @@ from pathlib import Path
 from .constants import DEFAULT_MODEL, DEFAULT_REASONING_EFFORT
 
 
+APPEARANCE_LIGHT = "light"
+APPEARANCE_DARK = "dark"
+APPEARANCES = (APPEARANCE_LIGHT, APPEARANCE_DARK)
+
+
+def normalise_appearance(value: object) -> str:
+    """Return a supported appearance, defaulting safely to Light."""
+
+    return APPEARANCE_DARK if str(value or "").strip().casefold() == APPEARANCE_DARK else APPEARANCE_LIGHT
+
+
 def default_data_dir() -> Path:
     override = os.environ.get("CUTDATA_AI_DATA_DIR")
     if override:
@@ -25,9 +36,9 @@ class AppSettings:
 
     model: str = DEFAULT_MODEL
     reasoning_effort: str = DEFAULT_REASONING_EFFORT
+    appearance: str = APPEARANCE_LIGHT
     mock_mode: bool = False
     last_machine: str = "Generic CNC Mill"
     last_material: str = "Mild Steel"
     last_tool_type: str = "Drill"
     last_coolant: str = "Flood coolant"
-

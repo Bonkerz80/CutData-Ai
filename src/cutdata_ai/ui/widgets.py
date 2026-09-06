@@ -14,10 +14,16 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QDoubleSpinBox,
     QVBoxLayout,
     QWidget,
+)
+
+from ..config.operations import (
+    operation_field_config,
+    operations_for_tool,
 )
 
 
@@ -25,6 +31,10 @@ def combo(values: list[str] | tuple[str, ...], editable: bool = False) -> QCombo
     widget = QComboBox()
     widget.addItems(list(values))
     widget.setEditable(editable)
+    widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    widget.setMinimumContentsLength(0)
+    widget.setMinimumWidth(0)
+    widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     if editable:
         widget.setInsertPolicy(QComboBox.NoInsert)
     return widget
@@ -43,6 +53,8 @@ def double_spin(
     widget.setValue(value)
     widget.setKeyboardTracking(False)
     widget.setAlignment(Qt.AlignRight)
+    widget.setMinimumWidth(0)
+    widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     return widget
 
 
@@ -51,6 +63,8 @@ def integer_spin(value: int = 0, maximum: int = 100) -> QSpinBox:
     widget.setRange(0, maximum)
     widget.setValue(value)
     widget.setAlignment(Qt.AlignRight)
+    widget.setMinimumWidth(0)
+    widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     return widget
 
 
@@ -71,6 +85,29 @@ class ModeSwitch(QPushButton):
 
     def _update_label(self, mock_mode: bool) -> None:
         self.setText("MOCK MODE ON" if mock_mode else "LIVE AI MODE")
+
+
+class AppearanceSwitch(QPushButton):
+    """A prominent, keyboard-friendly Light/Dark appearance switch."""
+
+    def __init__(self, appearance: str = "light", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("appearanceSwitch")
+        self.setCheckable(True)
+        self.setMinimumHeight(40)
+        self.setMinimumWidth(170)
+        self.setAccessibleName("Light or dark appearance")
+        self.setToolTip("Preview the complete application in Light or Dark mode.")
+        self.toggled.connect(self._update_label)
+        self.setChecked(str(appearance).casefold() == "dark")
+        self._update_label(self.isChecked())
+
+    @property
+    def appearance(self) -> str:
+        return "dark" if self.isChecked() else "light"
+
+    def _update_label(self, dark: bool) -> None:
+        self.setText("DARK MODE" if dark else "LIGHT MODE")
 
 
 class FieldPage(QWidget):
@@ -96,10 +133,42 @@ class FieldPage(QWidget):
 
     def add_field(self, key: str, label: str, widget: QWidget) -> QWidget:
         label_widget = QLabel(label)
+        label_widget.setWordWrap(True)
+        label_widget.setMinimumWidth(0)
+        label_widget.setMaximumWidth(170)
+        label_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        widget.setMinimumWidth(0)
+        if isinstance(widget, QCheckBox):
+            widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.form.addRow(label_widget, widget)
         self.fields[key] = widget
         self.rows[key] = (label_widget, widget)
         return widget
+
+    def set_field_label(self, key: str, label: str) -> None:
+        row = self.rows.get(key)
+        if row:
+            row[0].setText(label)
+
+    def set_operation_options(self, options: tuple[str, ...] | list[str], target: str = "") -> None:
+        widget = self.fields.get("operation")
+        if not isinstance(widget, QComboBox):
+            return
+        current = target or widget.currentText()
+        widget.blockSignals(True)
+        widget.clear()
+        widget.addItems(list(options))
+        index = next(
+            (candidate for candidate in range(widget.count())
+             if widget.itemText(candidate).casefold() == str(current).casefold()),
+            -1,
+        )
+        widget.setCurrentIndex(index if index >= 0 else 0)
+        widget.blockSignals(False)
+        self.refresh_operation_fields(widget.currentText())
+
+    def refresh_operation_fields(self, _operation: str) -> None:
+        """Hook for pages whose labels and fields depend on operation."""
 
     def add_hint(self, text: str) -> None:
         hint = QLabel(text)
@@ -141,6 +210,11 @@ class FieldPage(QWidget):
                     widget.setCurrentIndex(index)
                 elif widget.isEditable():
                     widget.setCurrentText(str(value))
+                elif key == "operation" and str(value).strip():
+                    # Keep an old operation visible when reopening legacy
+                    # state/history; new dropdowns still start with ENCY names.
+                    widget.addItem(str(value).strip())
+                    widget.setCurrentIndex(widget.count() - 1)
             elif isinstance(widget, QCheckBox):
                 if isinstance(value, str):
                     widget.setChecked(value.strip().casefold() in {"1", "true", "yes", "on"})
@@ -261,7 +335,7 @@ class EndMillPage(FieldPage):
         self.add_field("stickout_mm", "Tool stickout (mm)", double_spin(30.0, step=0.1))
         self.add_field("cutting_edge_length_mm", "Cutting edge length (mm, optional)", double_spin(0.0, step=0.1))
         self.add_field("corner_radius_mm", "Corner radius (mm, optional)", double_spin(0.0, step=0.1))
-        operation = combo(("Slotting", "Profiling", "Pocketing", "Adaptive / Dynamic Milling", "Finishing", "Plunging", "Helical interpolation", "Ramp"))
+        operation = combo(operations_for_tool("End Mill"))
         self.add_field("operation", "Operation", operation)
         self.add_field("axial_doc_mm", "Axial DOC (mm)", double_spin(3.0, step=0.1))
         self.add_field("radial_doc_mm", "Radial DOC / width (mm)", double_spin(3.0, step=0.1))
@@ -280,13 +354,20 @@ class EndMillPage(FieldPage):
         self._operation_changed(operation.currentText())
 
     def _operation_changed(self, operation: str) -> None:
-        # Keep the form compact by hiding measurements that are not meaningful
-        # for the selected path, while retaining the widgets for keyboard use.
-        show_pocket = operation in {"Pocketing", "Helical interpolation"}
-        show_stock = operation in {"Profiling", "Pocketing", "Adaptive / Dynamic Milling", "Finishing"}
-        self.set_field_visible("pocket_depth_mm", show_pocket)
-        self.set_field_visible("stock_remaining_mm", show_stock)
+        config = operation_field_config(operation)
+        self.set_field_label("axial_doc_mm", config.axial_label)
+        self.set_field_label("radial_doc_mm", config.radial_label)
+        self.set_field_label("stock_remaining_mm", config.stock_label)
+        self.set_field_visible("axial_doc_mm", config.show_axial)
+        self.set_field_visible("radial_doc_mm", config.show_radial)
+        self.set_field_visible("stock_remaining_mm", config.show_stock)
+        self.set_field_visible("pocket_depth_mm", config.show_pocket)
+        self.set_field_visible("material_thickness_mm", config.show_material_thickness)
+        self.set_field_visible("finish_priority", config.show_finish_priority)
         self.operation_changed.emit(operation)
+
+    def refresh_operation_fields(self, operation: str) -> None:
+        self._operation_changed(operation)
 
 
 class IndexablePage(FieldPage):
@@ -299,7 +380,8 @@ class IndexablePage(FieldPage):
         self.add_field("insert_code", "Insert designation (optional)", QLineEdit())
         self.add_field("insert_grade", "Insert grade (optional)", QLineEdit())
         self.add_field("cutter_type", "Cutter type", combo(("Face mill", "Shoulder mill", "High feed mill", "Round/button cutter", "General indexable cutter")))
-        self.add_field("operation", "Operation", combo(("Facing", "Profiling", "Pocketing", "Roughing", "Finishing")))
+        operation = combo(operations_for_tool("Indexable End Mill"))
+        self.add_field("operation", "Operation", operation)
         self.add_field("axial_doc_mm", "Axial DOC (mm)", double_spin(2.0, step=0.1))
         self.add_field("radial_doc_mm", "Radial engagement (mm)", double_spin(5.0, step=0.1))
         self.add_field("material_thickness_mm", "Material thickness (mm, optional)", double_spin(0.0, step=0.1))
@@ -309,3 +391,19 @@ class IndexablePage(FieldPage):
         self.add_field("setup_rigidity", "Setup rigidity", combo(("Light", "Normal", "Rigid")))
         self.add_field("toolholder_type", "Toolholder", combo(("Collet", "Weldon / side lock", "Hydraulic", "Shrink fit", "Milling chuck", "Other")))
         self.add_field("coolant_type", "Coolant", combo(("Flood coolant", "Through-tool coolant", "Mist", "Air blast", "None / dry")))
+        operation.currentTextChanged.connect(self._operation_changed)
+        self._operation_changed(operation.currentText())
+
+    def _operation_changed(self, operation: str) -> None:
+        config = operation_field_config(operation)
+        self.set_field_label("axial_doc_mm", config.axial_label)
+        self.set_field_label("radial_doc_mm", config.radial_label)
+        self.set_field_label("stock_remaining_mm", config.stock_label)
+        self.set_field_visible("axial_doc_mm", config.show_axial)
+        self.set_field_visible("radial_doc_mm", config.show_radial)
+        self.set_field_visible("stock_remaining_mm", config.show_stock)
+        self.set_field_visible("material_thickness_mm", config.show_material_thickness)
+        self.operation_changed.emit(operation)
+
+    def refresh_operation_fields(self, operation: str) -> None:
+        self._operation_changed(operation)

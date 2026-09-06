@@ -149,3 +149,39 @@ def test_mock_results_are_not_written_to_production_cache(tmp_path):
     outcome = service.calculate(req(22), MACHINE)
     assert outcome.source == "mock"
     assert database.get_cache_record(outcome.request_hash) is None
+
+
+@pytest.mark.parametrize(("decision", "q"), [(True, 6), (False, None)])
+def test_exact_cache_and_restart_preserve_ai_peck_decision(tmp_path, decision, q):
+    from tests.test_calculations import FakeAI
+
+    path = tmp_path / "peck-cache.sqlite3"
+    payload = {"rpm": 800, "feed_mm_min": 80, "peck_recommended": decision, "peck_mm": q,
+               "recommended_cycle": "Chosen AI drilling method"}
+    ai = FakeAI(payload)
+    first = CalculationService(Database(path), ai).calculate(req(), MACHINE)
+    second = CalculationService(Database(path), ai).calculate(req(), MACHINE)
+    assert ai.calls == 1
+    assert second.source == "cache"
+    assert second.result.peck_recommended is decision
+    assert second.result.peck_mm == q
+    assert second.result.recommended_cycle == first.result.recommended_cycle
+
+
+def test_previous_drilling_prompt_cache_is_refreshed_without_deleting_history(tmp_path):
+    from src.cutdata_ai.config.constants import SCHEMA_VERSION
+    from tests.test_calculations import FakeAI
+
+    database = Database(tmp_path / "old-drill-prompt.sqlite3")
+    normalized = normalize_request(req())
+    key = request_hash(normalized)
+    old_payload = {"rpm": 800, "feed_mm_min": 80, "peck_recommended": None, "peck_mm": None}
+    database.put_cache_record(key, normalized, old_payload, old_payload, "old-model", "2026-09-03.2", SCHEMA_VERSION)
+    database.add_recent(key, normalized, old_payload, "ai")
+    ai = FakeAI({**old_payload, "peck_recommended": False})
+
+    refreshed = CalculationService(database, ai).calculate(req(), MACHINE)
+
+    assert ai.calls == 1 and refreshed.source == "ai"
+    assert refreshed.result.peck_recommended is False
+    assert json.loads(database.recent()[1]["result_json"]) == old_payload

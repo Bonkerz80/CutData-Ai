@@ -10,7 +10,7 @@ import os
 from dataclasses import asdict, dataclass
 
 from ..config.constants import DEFAULT_MODEL, DEFAULT_REASONING_EFFORT
-from ..config.settings import AppSettings
+from ..config.settings import AppSettings, normalise_appearance
 from ..database.database import Database
 
 
@@ -105,6 +105,7 @@ class SettingsService:
             model=self.database.get_setting("model", DEFAULT_MODEL) or DEFAULT_MODEL,
             reasoning_effort=self.database.get_setting("reasoning_effort", DEFAULT_REASONING_EFFORT)
             or DEFAULT_REASONING_EFFORT,
+            appearance=normalise_appearance(self.database.get_setting("appearance", "light")),
             mock_mode=mock_mode,
             last_machine=self.database.get_setting("last_machine", "Generic CNC Mill") or "Generic CNC Mill",
             last_material=self.database.get_setting("last_material", "Mild Steel") or "Mild Steel",
@@ -113,6 +114,7 @@ class SettingsService:
         )
 
     def save(self, settings: AppSettings) -> None:
+        settings.appearance = normalise_appearance(settings.appearance)
         values = asdict(settings)
         for key, value in values.items():
             self.database.set_setting(key, ("1" if value else "0") if isinstance(value, bool) else str(value))

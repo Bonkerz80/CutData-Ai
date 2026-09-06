@@ -210,12 +210,37 @@ def test_deep_hole_valid_no_peck_recommendation_is_not_overridden():
     assert corrected.peck_mm is None
 
 
-def test_ai_peck_without_q_is_rejected_instead_of_inventing_q():
+@pytest.mark.parametrize("q", [None, 0, -1, float("nan"), float("inf"), "invalid", True])
+def test_ai_peck_without_q_is_rejected_instead_of_inventing_q(q):
     req = request("Drill", {"diameter_mm": 10, "tool_material": "HSS", "hole_depth_mm": 100})
-    result = MachiningResult(rpm=500, feed_mm_min=50, feed_per_rev_mm=0.1, peck_recommended=True)
+    result = MachiningResult(rpm=500, feed_mm_min=50, feed_per_rev_mm=0.1, peck_recommended=True, peck_mm=q)
 
-    with pytest.raises(StructuredResponseError, match="peck depth"):
+    with pytest.raises(StructuredResponseError, match="peck"):
         validate_and_correct_result(result, req, MACHINE)
+
+
+@pytest.mark.parametrize("q", [None, 0, -1, float("nan"), float("inf"), "invalid", True])
+def test_invalid_live_peck_response_is_not_cached_or_added_to_history(tmp_path, q):
+    from src.cutdata_ai.database.database import Database
+    from src.cutdata_ai.services.normalization import normalize_request, request_hash
+
+    payload = {"rpm": 800, "feed_mm_min": 80, "peck_recommended": True, "peck_mm": q}
+    database = Database(tmp_path / "invalid-live-q.sqlite3")
+    with pytest.raises(StructuredResponseError, match="peck"):
+        CalculationService(database, FakeAI(payload)).calculate(request(), MACHINE)
+    assert not database.recent()
+    assert database.get_cache_record(request_hash(normalize_request(request()))) is None
+
+
+@pytest.mark.parametrize("depth", [5, 100, 1000])
+@pytest.mark.parametrize(("decision", "q"), [(True, 6), (False, None), (None, None)])
+def test_depth_does_not_generate_or_replace_ai_peck_decision(depth, decision, q):
+    req = request("Drill", {"diameter_mm": 10, "hole_depth_mm": depth})
+    result = MachiningResult(rpm=500, feed_mm_min=50, peck_recommended=decision, peck_mm=q)
+    corrected, _ = validate_and_correct_result(result, req, MACHINE)
+    assert corrected.peck_recommended is decision
+    assert corrected.peck_mm == q
+    assert corrected.recommended_cycle is None
 
 
 def test_omitted_metric_tap_drill_is_not_derived_locally():
@@ -249,7 +274,7 @@ def test_omitted_reaming_allowance_is_not_manufactured_locally():
     assert corrected.reaming_stock_mm is None
 
 
-def test_invalid_reamer_peck_cycle_is_rejected_without_rewriting_ai_data():
+def test_invalid_reamer_peck_cycle_is_discarded_without_rewriting_reaming_data():
     req = request("Reamer", {"diameter_mm": 10, "existing_hole_diameter_mm": 9.8, "hole_depth_mm": 20})
     result = MachiningResult(
         rpm=400,
@@ -258,8 +283,62 @@ def test_invalid_reamer_peck_cycle_is_rejected_without_rewriting_ai_data():
         recommended_cycle="G83 peck cycle",
     )
 
-    with pytest.raises(StructuredResponseError, match="drilling-style peck"):
-        validate_and_correct_result(result, req, MACHINE)
+    corrected, corrections = validate_and_correct_result(result, req, MACHINE)
+
+    assert corrected.peck_recommended is False
+    assert corrected.peck_mm is None
+    assert corrected.recommended_cycle is None
+    assert corrected.rpm == result.rpm
+    assert corrected.feed_mm_min == result.feed_mm_min
+    assert any("peck data discarded" in item for item in corrections)
+    assert any("continuous-feed reaming" in item for item in corrected.warnings)
+
+
+def test_valid_continuous_feed_reamer_cycle_is_preserved():
+    req = request("Reamer", {"diameter_mm": 10, "existing_hole_diameter_mm": 9.8, "hole_depth_mm": 20})
+    result = MachiningResult(
+        rpm=400,
+        feed_mm_min=40,
+        feed_per_rev_mm=0.1,
+        peck_recommended=False,
+        recommended_cycle="Constant-feed reaming cycle; do not peck",
+    )
+
+    corrected, corrections = validate_and_correct_result(result, req, MACHINE)
+
+    assert corrected.peck_recommended is False
+    assert corrected.recommended_cycle == result.recommended_cycle
+    assert not any("peck data discarded" in item for item in corrections)
+
+
+def test_invalid_reamer_response_retains_safe_debug_context(tmp_path):
+    req = request("Reamer", {"diameter_mm": 10, "existing_hole_diameter_mm": 9.8, "hole_depth_mm": 20})
+    payload = {
+        "rpm": 400,
+        "feed_mm_min": 40,
+        "feed_per_rev_mm": 0.1,
+        "peck_mm": 2,
+        "peck_recommended": True,
+        "recommended_cycle": "G83 peck cycle",
+        "coolant": "Flood coolant",
+        "confidence": "medium",
+        "notes": [],
+        "warnings": [],
+    }
+    from src.cutdata_ai.database.database import Database
+
+    service = CalculationService(Database(tmp_path / "reamer-debug.sqlite3"), FakeAI(payload))
+    outcome = service.calculate(req, MACHINE)
+
+    context = service.last_failure_context
+    assert context["normalized_request"]["tool_type"] == "reamer"
+    assert context["prompt"] == "test prompt"
+    assert "G83 peck cycle" in context["raw_response"]
+    assert context["request_hash"]
+    assert outcome.result.peck_recommended is False
+    assert outcome.result.peck_mm is None
+    assert outcome.result.recommended_cycle is None
+    assert any("continuous-feed reaming" in item for item in outcome.result.warnings)
 
 
 def test_invalid_peck_type_is_rejected_cleanly(tmp_path):

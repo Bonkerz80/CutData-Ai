@@ -75,6 +75,17 @@ def test_mock_and_live_mode_persist_as_explicit_choices(tmp_path, monkeypatch):
     assert service.load().mock_mode is False
 
 
+def test_appearance_defaults_to_light_and_persists_dark_choice(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    service = SettingsService(Database(tmp_path / "appearance.sqlite3"))
+
+    assert service.load().appearance == "light"
+    service.save(AppSettings(appearance="dark"))
+    assert service.load().appearance == "dark"
+    service.save(AppSettings(appearance="invalid"))
+    assert service.load().appearance == "light"
+
+
 def test_clear_saved_key_does_not_remove_environment_key(tmp_path, monkeypatch):
     fake_secret_store(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")

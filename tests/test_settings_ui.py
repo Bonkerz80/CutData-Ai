@@ -12,7 +12,7 @@ from src.cutdata_ai.services.settings_service import SecretStore, SettingsServic
 from src.cutdata_ai.config.constants import APP_VERSION, COMPANY_NAME, ICON_SVG_PATH, PRODUCT_TAGLINE, WINDOWS_ICON_PATH
 from src.cutdata_ai.services.normalization import normalize_request, request_hash
 from src.cutdata_ai.ui.dialogs import AboutDialog, ConnectionTestWorker, SettingsDialog
-from src.cutdata_ai.ui.main_window import MainWindow, normalise_window_state
+from src.cutdata_ai.ui.main_window import MainWindow, apply_styles, normalise_window_state
 
 
 @pytest.fixture(scope="session")
@@ -86,6 +86,48 @@ def test_mode_switch_label_and_saved_choice(qapp, tmp_path, monkeypatch):
         assert service.load().mock_mode is False
     finally:
         close_widget(dialog, qapp)
+
+
+def test_appearance_switch_previews_cancel_restores_and_save_persists(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    apply_styles(qapp, "light")
+    database = Database(tmp_path / "appearance-dialog.sqlite3")
+    service = SettingsService(database)
+    dialog = SettingsDialog(database, service.load())
+
+    try:
+        assert dialog.appearance_switch.text() == "LIGHT MODE"
+        dialog.appearance_switch.setChecked(True)
+        qapp.processEvents()
+        assert qapp.property("cutdataAppearance") == "dark"
+        dialog._cancel()
+        assert qapp.property("cutdataAppearance") == "light"
+    finally:
+        close_widget(dialog, qapp)
+
+    saved = SettingsDialog(database, service.load())
+    try:
+        saved.appearance_switch.setChecked(True)
+        saved._save()
+        assert service.load().appearance == "dark"
+        assert qapp.property("cutdataAppearance") == "dark"
+    finally:
+        close_widget(saved, qapp)
+        apply_styles(qapp, "light")
+
+
+def test_main_window_applies_saved_dark_theme_before_show(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    apply_styles(qapp, "light")
+    database = Database(tmp_path / "dark-startup.sqlite3")
+    database.set_setting("appearance", "dark")
+    window = MainWindow(database)
+    try:
+        assert qapp.property("cutdataAppearance") == "dark"
+        assert window.settings.appearance == "dark"
+    finally:
+        close_widget(window, qapp)
+        apply_styles(qapp, "light")
 
 
 def test_main_window_status_recognises_saved_key_and_service(qapp, tmp_path, monkeypatch):

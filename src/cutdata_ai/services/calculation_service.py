@@ -9,7 +9,8 @@ from typing import Any
 from ..config.constants import tool_family
 from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
-from ..models.schema import StructuredResponseError, result_from_dict, result_from_json
+from ..models.schema import StructuredResponseError, result_from_dict, result_from_json, validate_drilling_peck
+from ..prompts.machining import build_user_prompt
 from .normalization import normalize_request, request_hash
 from .openai_service import ServiceResponse
 
@@ -199,20 +200,43 @@ def validate_and_correct_result(
             corrections.append("Milling feed recalculated as RPM × teeth × feed per tooth.")
 
     if family == "drill":
-        if corrected.peck_recommended is not None and not isinstance(corrected.peck_recommended, bool):
-            raise StructuredResponseError("Peck recommendation must be boolean or null")
-        if corrected.peck_recommended is True and (corrected.peck_mm is None or corrected.peck_mm <= 0):
-            raise StructuredResponseError("Pecking was recommended but no positive peck depth was provided")
+        validate_drilling_peck(corrected)
         depth = _number(p, "hole_depth_mm")
         if depth is not None and corrected.peck_mm is not None and corrected.peck_mm > depth:
             warnings.append("Peck depth exceeds the entered hole depth; verify the cycle before running.")
         if corrected.peck_recommended is None:
             warnings.append("AI did not specify whether pecking is required; verify the drilling cycle.")
     elif family == "reamer":
-        if corrected.peck_recommended is True or (
-            corrected.recommended_cycle and "peck" in corrected.recommended_cycle.casefold()
+        cycle_text = (corrected.recommended_cycle or "").casefold()
+        for prohibition in (
+            "do not peck",
+            "don't peck",
+            "no peck",
+            "without peck",
+            "avoid peck",
+            "do not drill",
+            "don't drill",
+            "no drilling",
+            "without drilling",
+            "avoid drilling",
         ):
-            raise StructuredResponseError("Reamer response requested a drilling-style peck cycle")
+            cycle_text = cycle_text.replace(prohibition, "")
+        invalid_cycle_markers = ("peck", "g83", "g81", "drill", "chip-clearing", "chip clearing")
+        invalid_cycle = any(marker in cycle_text for marker in invalid_cycle_markers)
+        had_peck_fields = corrected.peck_mm is not None or corrected.peck_recommended is True
+        if had_peck_fields or invalid_cycle:
+            # Pecking is not an applicable Reamer output. Discard only the
+            # incompatible fields rather than manufacturing a replacement
+            # cycle or refusing otherwise usable reaming data.
+            corrected.peck_mm = None
+            corrected.peck_recommended = False
+            if invalid_cycle:
+                corrected.recommended_cycle = None
+            corrections.append("Incompatible Reamer peck data discarded locally; use continuous-feed reaming.")
+            warnings.append(
+                "AI returned drilling-style peck data for a Reamer; the peck data was discarded. "
+                "Use continuous-feed reaming and verify the cycle before running."
+            )
         if corrected.pre_ream_size_mm is None:
             warnings.append("AI did not provide a pre-ream size; verify the bore preparation.")
         if corrected.reaming_stock_mm is None:
@@ -263,17 +287,39 @@ class CalculationService:
     def __init__(self, database: Database, ai_service: Any):
         self.database = database
         self.ai_service = ai_service
+        # The UI uses this read-only context when a response cannot become a
+        # CalculationOutcome. It deliberately contains no API credentials.
+        self.last_failure_context: dict[str, Any] = {}
 
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> CalculationOutcome:
+        normalized = normalize_request(request)
+        cache_key = request_hash(normalized)
+        self.last_failure_context = {
+            "normalized_request": normalized,
+            "request_hash": cache_key,
+            "source": "mock" if getattr(self.ai_service, "is_mock", False) else "ai",
+            "model": str(getattr(self.ai_service, "model", "") or ""),
+            "prompt": build_user_prompt(request, machine),
+            "raw_response": "",
+            "validated_response": "",
+            "response_id": "",
+            "usage": {},
+            "stage": "request validation",
+        }
         errors, input_warnings = validate_request(request, machine)
         if errors:
             raise CalculationInputError(" ".join(errors))
 
-        normalized = normalize_request(request)
-        cache_key = request_hash(normalized)
-
         preferred = self.database.get_preferred_result(cache_key)
         if preferred:
+            self.last_failure_context.update(
+                {
+                    "source": "workshop",
+                    "model": "local workshop setting",
+                    "raw_response": preferred["ai_result_json"],
+                    "stage": "workshop result validation",
+                }
+            )
             preferred_result = result_from_json(preferred["preferred_result_json"])
             validated, corrections = validate_and_correct_result(preferred_result, request, machine)
             validated.warnings = list(dict.fromkeys(input_warnings + validated.warnings))
@@ -293,6 +339,16 @@ class CalculationService:
         cached = self.database.get_cache_record(cache_key)
         if cached:
             try:
+                self.last_failure_context.update(
+                    {
+                        "source": "cache",
+                        "model": cached["model"],
+                        "raw_response": cached["returned_data_json"],
+                        "response_id": cached.get("response_id", ""),
+                        "usage": json.loads(cached.get("usage_json", "{}")),
+                        "stage": "cached result validation",
+                    }
+                )
                 cached_result = result_from_json(cached["validated_data_json"])
                 validated, corrections = validate_and_correct_result(cached_result, request, machine)
             except (StructuredResponseError, CalculationInputError):
@@ -314,6 +370,17 @@ class CalculationService:
                 )
 
         service_response: ServiceResponse = self.ai_service.calculate(request, machine)
+        self.last_failure_context.update(
+            {
+                "source": "mock" if service_response.is_mock else "ai",
+                "model": service_response.model,
+                "prompt": service_response.prompt,
+                "raw_response": service_response.raw_text,
+                "response_id": service_response.response_id,
+                "usage": service_response.usage or {},
+                "stage": "structured response validation",
+            }
+        )
         model_result = result_from_dict(service_response.payload)
         validated, corrections = validate_and_correct_result(model_result, request, machine)
         validated.warnings = list(dict.fromkeys(input_warnings + validated.warnings))
