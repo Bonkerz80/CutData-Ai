@@ -8,7 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from src.cutdata_ai.config.constants import tool_family
+from src.cutdata_ai.config.constants import PROMPT_VERSION, SCHEMA_VERSION, tool_family
+from src.cutdata_ai.config.operations import (
+    LEGACY_MILLING_OPERATIONS,
+    legacy_operation_warning,
+    operations_for_tool,
+)
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.models.domain import MachiningRequest, MachiningResult, MachineProfile, CalculationOutcome
 from src.cutdata_ai.models.schema import StructuredResponseError
@@ -71,12 +76,86 @@ def test_optional_zero_and_false_semantics(window):
     assert window._collect_request().parameters["rigid_tapping"] is False
 
 
-def test_thread_mill_cannot_bypass_legacy_operation_guard(window):
+@pytest.mark.parametrize("operation", ("Slotting", "Profiling", "Helical interpolation"))
+def test_thread_mill_operation_vocabulary_is_current_and_calls_ai(window, operation):
     window.tool_combo.setCurrentText("Thread Mill")
+    assert operations_for_tool("Thread Mill") == LEGACY_MILLING_OPERATIONS
+    window.pages["end_mill"].load_values({"operation": operation})
     ai = CountingAI()
+    result = CalculationService(window.database, ai).calculate(window._collect_request(), window._machine())
+    assert result.source == "ai"
+    assert ai.calls == 1
+    assert all("legacy operation" not in note.casefold() for note in result.result.notes)
+
+
+def test_thread_mill_operation_names_are_current_but_end_mill_names_are_legacy(window):
+    window.tool_combo.setCurrentText("Thread Mill")
+    request = window._collect_request()
+    assert not legacy_operation_warning(window.tool_combo.currentText(), request.operation)
+
+    window.tool_combo.setCurrentText("End Mill")
+    window.pages["end_mill"].load_values({"operation": "Profiling"})
     with pytest.raises(CalculationInputError, match="legacy operation"):
-        CalculationService(window.database, ai).calculate(window._collect_request(), window._machine())
-    assert ai.calls == 0
+        CalculationService(window.database, CountingAI()).calculate(window._collect_request(), window._machine())
+
+
+def test_thread_mill_prompt_version_and_schema_contract():
+    from src.cutdata_ai.prompts.machining import SYSTEM_PROMPT
+    assert PROMPT_VERSION == "2026-09-07.2"
+    assert SCHEMA_VERSION == "2"
+    assert "current Thread Mill" in SYSTEM_PROMPT
+    assert "do not treat them as legacy" in SYSTEM_PROMPT
+
+
+def test_thread_mill_request_excludes_hidden_fields_but_keeps_visible_inputs(window):
+    window.tool_combo.setCurrentText("Thread Mill")
+    page = window.pages["end_mill"]
+    page.load_values({
+        "operation": "Profiling",
+        "ball_nose_contact": "Full-radius contact",
+        "corner_radius_mm": 4,
+        "diameter_mm": 8,
+        "flute_count": 3,
+        "stickout_mm": 25,
+        "radial_doc_mm": 1.5,
+    })
+    request = window._collect_request()
+    assert request.parameters["diameter_mm"] == 8
+    assert request.parameters["flute_count"] == 3
+    assert request.parameters["stickout_mm"] == 25
+    assert request.parameters["radial_doc_mm"] == 1.5
+    assert "ball_nose_contact" not in request.parameters
+    assert "corner_radius_mm" not in request.parameters
+
+
+def test_thread_mill_hidden_fields_do_not_change_hash_but_visible_fields_do(window):
+    window.tool_combo.setCurrentText("Thread Mill")
+    page = window.pages["end_mill"]
+    page.load_values({"operation": "Profiling", "diameter_mm": 8})
+    base = normalize_request(window._collect_request())
+    page.load_values({"ball_nose_contact": "Full-radius contact", "corner_radius_mm": 4})
+    assert request_hash(normalize_request(window._collect_request())) == request_hash(base)
+    page.load_values({"diameter_mm": 10})
+    assert request_hash(normalize_request(window._collect_request())) != request_hash(base)
+
+
+def test_thread_mill_history_reopens_and_recalculates(window):
+    window.tool_combo.setCurrentText("Thread Mill")
+    window.pages["end_mill"].load_values({"operation": "Profiling"})
+    request = window._collect_request()
+    result = MachiningResult(rpm=800, feed_mm_min=80)
+    normalized = normalize_request(request)
+    window.database.add_recent("thread-history", normalized, result.to_dict(), "ai")
+    window._load_recent()
+    item = window.recent_list.item(0)
+    window._load_recent_item(item)
+    assert window.tool_combo.currentText() == "Thread Mill"
+    assert window.pages["end_mill"].values()["operation"] == "Profiling"
+    assert "legacy operation" not in window.result_banner.text().casefold()
+    ai = CountingAI()
+    outcome = CalculationService(window.database, ai).calculate(window._collect_request(), window._machine())
+    assert outcome.source == "ai"
+    assert ai.calls == 1
 
 
 def test_material_context_is_independent_of_window_visibility(window):

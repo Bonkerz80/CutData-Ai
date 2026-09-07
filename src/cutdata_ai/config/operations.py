@@ -156,8 +156,30 @@ def is_legacy_operation(operation: str) -> bool:
     return value in {item.casefold() for item in LEGACY_MILLING_OPERATIONS}
 
 
+_LEGACY_OPERATION_TOOL_TYPES = frozenset({
+    "end mill",
+    "ball nose end mill",
+    "bull nose / corner radius end mill",
+    "face mill",
+    "indexable end mill",
+})
+
+
+def is_legacy_operation_for_tool(tool_type: str, operation: str) -> bool:
+    """Return whether an operation is legacy for this tool identity.
+
+    Thread Mill deliberately uses the historical labels as its current
+    strategy vocabulary, so the same text is legacy only for the older
+    generic/indexable milling workflows.
+    """
+    return (
+        str(tool_type or "").strip().casefold() in _LEGACY_OPERATION_TOOL_TYPES
+        and is_legacy_operation(operation)
+    )
+
+
 def legacy_operation_warning(tool_type: str, operation: str) -> str:
-    if operations_for_tool(tool_type) and is_legacy_operation(operation):
+    if is_legacy_operation_for_tool(tool_type, operation):
         return (f"This saved calculation uses the legacy operation '{operation}'. "
                 "Select a current ENCY operation before recalculating.")
     return ""

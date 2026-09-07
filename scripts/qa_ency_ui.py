@@ -34,11 +34,19 @@ CASES = [
     ("Indexable", "Indexable End Mill", "Roughing Waterline"),
     ("Flat-Land", "End Mill", "Flat Land Finishing"),
     ("Legacy", "End Mill", "Profiling"),
+    ("Thread-Slotting", "Thread Mill", "Slotting"),
+    ("Thread-Profiling", "Thread Mill", "Profiling"),
+    ("Thread-Pocketing", "Thread Mill", "Pocketing"),
+    ("Thread-Adaptive", "Thread Mill", "Adaptive / Dynamic Milling"),
+    ("Thread-Finishing", "Thread Mill", "Finishing"),
+    ("Thread-Plunging", "Thread Mill", "Plunging"),
+    ("Thread-Helical", "Thread Mill", "Helical interpolation"),
+    ("Thread-Ramp", "Thread Mill", "Ramp"),
 ]
 
 
 def main():
-    output = Path("build/visual-qa-0.1.10")
+    output = Path("build/visual-qa-0.1.11")
     output.mkdir(parents=True, exist_ok=True)
     app = QApplication([])
     app.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))

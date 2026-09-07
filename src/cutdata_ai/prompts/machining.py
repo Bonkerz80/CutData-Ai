@@ -30,6 +30,11 @@ Rules:
   surfaces; Finishing Plane is plane-based 3D surface finishing; and Flat
   Land Finishing is for horizontal flats or lands. These names describe the
   machining judgement only, not CAM toolpath generation.
+- For Thread Mill requests, the supplied operation is current Thread Mill
+  workflow context. The existing labels Slotting, Profiling, Pocketing,
+  Adaptive / Dynamic Milling, Finishing, Plunging, Helical interpolation, and
+  Ramp are valid Thread Mill strategy labels; do not treat them as legacy
+  End Mill history.
 - Decide the machining recommendations yourself, including RPM, feeds, DOC,
   stepover, pecking and Q, drilling cycle, tap drill, reaming stock,
   pre-ream size, coolant, notes, and warnings. Do not use a hidden local
