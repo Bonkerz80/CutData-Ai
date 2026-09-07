@@ -61,7 +61,9 @@ Prompt or schema version changes intentionally invalidate older cache entries. A
 
 ## Recent calculations
 
-Recent entries show the useful tool identity and operation details rather than timestamps. Double-click a recent calculation to reopen its exact inputs and result. Mock calculations are not persisted as production history. The existing saved-tool database table is retained for a later workflow redesign, but it is not exposed in this release.
+Recent entries show the useful tool identity and operation details rather than timestamps. Double-click a recent calculation to reopen its exact inputs and result. Mock calculations are not persisted as production history.
+
+The **Saved tools** strip is a small local tool library. Save the active tool definition with a name, then choose it later to restore its diameter, tool material, flute/insert count, coating, insert details, tap data, or other tool-specific fields. Job context such as material, operation, DOC, and coolant remains available to change for the next calculation. Saving the same name updates that tool; Remove deletes it from the local SQLite database.
 
 The complete calculator state is saved in the existing SQLite `app_settings` table. It includes machine/material context, custom material and hardness, the selected tool family, operation, model/reasoning/mock settings, and each tool-family page. State is saved on Calculate, family changes, recent-calculation reopening, and window close. Missing or malformed older state is ignored safely. The last window size and position are also restored when it intersects a current screen; off-screen geometry is clamped back into the available work area.
 
@@ -70,6 +72,8 @@ Results separate three kinds of information:
 - **Primary AI recommendation** — the structured machining judgement returned by the selected model and then checked locally.
 - **Derived data** — display-only L/D, engagement, DOC ratios, material-removal rate, machine-limit usage, and tapping relationships calculated from known inputs/results.
 - **AI context / estimates** — optional model-provided engagement description, setup risk, recommendation summary, spindle power, and spindle torque. Torque can be displayed from the model's power estimate using `9550 × kW ÷ RPM` when torque is not supplied.
+
+After a live or cached result, **Adjust / save workshop setting** opens an edit dialog for the prominent values. The original AI result remains stored separately; the edited values are stored as a local preference and take priority only for the exact same canonical request. Feed overrides are converted back to their authoritative feed-per-rev or feed-per-tooth relationship before validation, and rigid tapping continues to use `RPM × exact pitch`. Mock results cannot be saved as production workshop settings.
 
 Primary cards, applicable secondary and derived rows, and machining notes are visible from startup. Selecting a different tool immediately selects its display layout and clears old values to `—`. Calculations populate those same read-only widgets. AI context appears only when supplied, below the stable calculator display.
 
@@ -85,7 +89,7 @@ Milling operation names use the ENCY-style workshop vocabulary: **Roughing Water
 py -3 -m pytest -q
 ```
 
-Tests use fake services and never spend API credits. They cover exact cache identity, numeric normalisation, changed machining conditions, exact workshop-setting precedence, deterministic arithmetic and machine limits, no local peck/tap-drill/reaming invention, malformed responses, mock-mode isolation, API-key source priority, settings persistence, UI status, asynchronous connection testing, and connection-test cache isolation.
+Tests use fake services and never spend API credits. They cover exact cache identity, numeric normalisation, changed machining conditions, exact workshop-setting precedence, saved-tool loading, authoritative override feed arithmetic, deterministic arithmetic and machine limits, no local peck/tap-drill/reaming invention, malformed responses, mock-mode isolation, API-key source priority, settings persistence, UI status, asynchronous connection testing, and connection-test cache isolation.
 
 ## Windows executable
 
@@ -105,9 +109,9 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.1.8.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.1.9.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
-Version 0.1.8 adds the complete Light / Dark theme system, live theme preview and persistence, ENCY-style milling operation vocabulary, operation-specific labels/fields, per-tool last-used operations, and legacy operation reopening. It preserves the 0.1.7 startup display with stable tool-family placeholders and a permanent drilling PECK / Q card, compact recent-calculation summaries, read-only results, PPT branding, saved calculator state, exact caching, workshop preferences, and the focused workflow without Slot Cutter, T-Slot Cutter, or Saved Tool controls. The official `src\cutdata_ai\assets\ppt\ppt-cutdata.ico` remains the Windows product icon. Live machining recommendations come from the selected AI model; local code validates structure, deterministic arithmetic, and hard machine limits. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. The `ucnv_open` / `QtWidgets` startup fix is retained. Windows 10 1809 or later (64-bit), or Windows 11, is required.
+Version 0.1.9 adds the exposed Saved tools library and the Adjust / save workshop setting workflow. It preserves the complete Light / Dark theme system, live theme preview and persistence, ENCY-style milling operation vocabulary, operation-specific labels/fields, per-tool last-used operations, legacy operation reopening, the stable startup display with permanent drilling PECK / Q card, compact recent-calculation summaries, read-only result values, PPT branding, saved calculator state, exact caching, and separate local workshop preferences. The official `src\cutdata_ai\assets\ppt\ppt-cutdata.ico` remains the Windows product icon. Live machining recommendations come from the selected AI model; local code validates structure, deterministic arithmetic, and hard machine limits. Deep-hole Q values, tap-drill sizes, and reaming allowances are not manufactured locally. The `ucnv_open` / `QtWidgets` startup fix is retained. Windows 10 1809 or later (64-bit), or Windows 11, is required.
 
 Builds isolate native dependency discovery from developer tools on PATH. Qt uses the Windows ICU library; copying another application's `icuuc.dll` into the application directory will break its ABI. Before an installer is compiled, the release gate checks every ICU function imported by Qt against Windows. The following additional check starts the actual packaged window with a clean environment and verifies the loaded ICU path:
 

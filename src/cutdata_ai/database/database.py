@@ -268,6 +268,12 @@ class Database:
             )
             return dict(row)
 
+    def delete_saved_tool(self, tool_id: int) -> None:
+        """Remove one saved tool from the local tool library."""
+
+        with self.connect() as connection:
+            connection.execute("DELETE FROM saved_tools WHERE id = ?", (int(tool_id),))
+
     # Workshop preferences -----------------------------------------------
     def get_preferred_result(
         self,

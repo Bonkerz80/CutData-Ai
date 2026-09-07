@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QApplication,
+    QDoubleSpinBox,
     QWidget,
 )
 
@@ -43,6 +44,7 @@ from ..config.constants import (
 )
 from ..config.settings import AppSettings, normalise_appearance
 from ..database.database import Database
+from ..models.domain import MachiningResult
 from ..services.openai_service import (
     ConnectionTestResult,
     OpenAIService,
@@ -170,6 +172,79 @@ class AboutDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
+
+
+class WorkshopPreferenceDialog(QDialog):
+    """Edit the prominent result values before saving a local preference."""
+
+    _FIELD_SPECS = {
+        "rpm": ("Spindle speed (RPM)", 0.1, 1000000.0, 1),
+        "feed_mm_min": ("Feed (mm/min)", 0.0, 1000000.0, 1),
+        "axial_doc_mm": ("DOC (mm)", 0.0, 1000000.0, 0.1),
+        "stepover_mm": ("Stepover / WOC (mm)", 0.0, 1000000.0, 0.1),
+        "pre_ream_size_mm": ("Pre-ream size (mm)", 0.0, 1000000.0, 0.01),
+        "tap_drill_mm": ("Tapping drill (mm)", 0.0, 1000000.0, 0.01),
+    }
+
+    def __init__(
+        self,
+        result: MachiningResult,
+        editable_fields: tuple[str, ...],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Adjust workshop setting")
+        self.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))
+        self.setMinimumWidth(430)
+        self._fields: dict[str, QDoubleSpinBox] = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(_dialog_brand_header("Workshop setting", "Save a local preference for this exact machining request"))
+
+        explanation = QLabel(
+            "Adjust the values that matter at your machine. The original AI recommendation stays stored separately, "
+            "and local arithmetic and machine-limit checks are applied before saving."
+        )
+        explanation.setWordWrap(True)
+        explanation.setObjectName("hint")
+        layout.addWidget(explanation)
+
+        form = QFormLayout()
+        for key in editable_fields:
+            spec = self._FIELD_SPECS.get(key)
+            if spec is None:
+                continue
+            label, minimum, maximum, step = spec
+            editor = QDoubleSpinBox()
+            editor.setRange(minimum, maximum)
+            editor.setDecimals(3)
+            editor.setSingleStep(step)
+            editor.setKeyboardTracking(False)
+            editor.setAlignment(Qt.AlignRight)
+            value = getattr(result, key, None)
+            if key == "stepover_mm" and value is None:
+                value = result.radial_doc_mm
+            if value is not None:
+                editor.setValue(max(minimum, float(value)))
+            self._fields[key] = editor
+            form.addRow(label, editor)
+        layout.addLayout(form)
+
+        note = QLabel("Leave an optional value at 0 when it does not apply. Save only after checking the values at the machine.")
+        note.setWordWrap(True)
+        note.setObjectName("hint")
+        layout.addWidget(note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText("SAVE WORKSHOP SETTING")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> dict[str, float]:
+        return {key: widget.value() for key, widget in self._fields.items()}
 
 
 class SettingsDialog(QDialog):

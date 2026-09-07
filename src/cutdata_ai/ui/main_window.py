@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -57,7 +58,11 @@ from ..config.settings import AppSettings
 from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import result_from_json
-from ..services.calculation_service import CalculationService
+from ..services.calculation_service import (
+    CalculationInputError,
+    CalculationService,
+    validate_and_correct_result,
+)
 from ..services.derived_values import (
     axial_doc_ratio,
     hole_ld_ratio,
@@ -74,7 +79,7 @@ from ..services.openai_service import (
 )
 from ..services.settings_service import SettingsService
 from ..services.recent_summary import recent_item_text
-from .dialogs import AboutDialog, SettingsDialog
+from .dialogs import AboutDialog, SettingsDialog, WorkshopPreferenceDialog
 from .result_layout import peck_display, result_layout_for_family
 from .theme import apply_theme
 from .widgets import DrillPage, EndMillPage, FieldPage, IndexablePage, ReamerPage, TapPage, combo, double_spin
@@ -144,11 +149,14 @@ class MainWindow(QMainWindow):
         self._thread: QThread | None = None
         self._worker: CalculationWorker | None = None
         self._current_outcome: CalculationOutcome | None = None
+        self._current_request: MachiningRequest | None = None
+        self._current_machine: MachineProfile | None = None
         self._debug_visible = False
         self._api_error = False
         self.ai_service = None
         self._operation_by_tool: dict[str, str] = {}
         self._active_tool_type = ""
+        self._loading_saved_tool = False
         apply_theme(QApplication.instance(), self.settings.appearance)
 
         self.setWindowTitle(f"{PUBLISHER_NAME} {APP_NAME} {APP_VERSION} — CNC Machining Calculator")
@@ -318,6 +326,28 @@ class MainWindow(QMainWindow):
         self._apply_last_coolant()
         page_scroll.setWidget(self.page_stack)
         outer.addWidget(page_scroll, 1)
+
+        saved_tools_group = QGroupBox("Saved tools")
+        saved_tools_group.setObjectName("savedToolsGroup")
+        saved_tools_layout = QHBoxLayout(saved_tools_group)
+        saved_tools_layout.setContentsMargins(10, 10, 10, 10)
+        saved_tools_layout.setSpacing(7)
+        self.saved_tool_combo = QComboBox()
+        self._compact_combo(self.saved_tool_combo)
+        self.saved_tool_combo.setToolTip("Choose a saved tool definition to populate the active tool page.")
+        self.saved_tool_combo.currentIndexChanged.connect(self._saved_tool_selected)
+        saved_tools_layout.addWidget(self.saved_tool_combo, 1)
+        self.save_tool_button = QPushButton("Save current")
+        self.save_tool_button.setToolTip("Save the current tool definition to the local tool library.")
+        self.save_tool_button.clicked.connect(self._save_current_tool)
+        saved_tools_layout.addWidget(self.save_tool_button)
+        self.delete_tool_button = QPushButton("Remove")
+        self.delete_tool_button.setToolTip("Remove the selected saved tool from the local tool library.")
+        self.delete_tool_button.clicked.connect(self._delete_selected_tool)
+        self.delete_tool_button.setEnabled(False)
+        saved_tools_layout.addWidget(self.delete_tool_button)
+        self._refresh_saved_tools()
+        outer.addWidget(saved_tools_group)
 
         recent_group = QGroupBox("Recent calculations")
         recent_group.setObjectName("recentGroup")
@@ -538,10 +568,18 @@ class MainWindow(QMainWindow):
         self.retry_button = QPushButton("Retry")
         self.retry_button.setVisible(False)
         self.retry_button.clicked.connect(self._calculate)
+        self.workshop_button = QPushButton("Adjust / save workshop setting")
+        self.workshop_button.setObjectName("secondaryAction")
+        self.workshop_button.setVisible(False)
+        self.workshop_button.setToolTip(
+            "Keep the AI recommendation and save a separate local preference for this exact request."
+        )
+        self.workshop_button.clicked.connect(self._open_workshop_preference)
         self.debug_button = QPushButton("Show advanced / debug")
         self.debug_button.setCheckable(True)
         self.debug_button.toggled.connect(self._toggle_debug)
         buttons.addWidget(self.retry_button)
+        buttons.addWidget(self.workshop_button)
         buttons.addStretch(1)
         buttons.addWidget(self.debug_button)
         outer.addLayout(buttons)
@@ -760,6 +798,12 @@ class MainWindow(QMainWindow):
         hardness_label.setVisible(hardened or custom)
 
     def _tool_changed(self, value: str = "") -> None:
+        if not self._loading_saved_tool and hasattr(self, "saved_tool_combo"):
+            self.saved_tool_combo.blockSignals(True)
+            self.saved_tool_combo.setCurrentIndex(0)
+            self.saved_tool_combo.blockSignals(False)
+            if hasattr(self, "delete_tool_button"):
+                self.delete_tool_button.setEnabled(False)
         if not self._restoring_state:
             self._save_calculator_state()
         self._update_tool_page(value)
@@ -820,6 +864,166 @@ class MainWindow(QMainWindow):
             self.pages[family].set_field_visible("corner_radius_mm", bull_nose)
         if hasattr(self, "result_fields"):
             self._reset_result_display()
+
+    @staticmethod
+    def _tool_definition_keys(tool_type: str) -> tuple[str, ...]:
+        """Return only the fields that define a reusable tool, not a job."""
+
+        family = tool_family(tool_type)
+        if family == "drill":
+            return ("diameter_mm", "tool_material", "coating", "flute_length_mm")
+        if family == "reamer":
+            return ("diameter_mm", "tool_material", "flute_count")
+        if family == "tap":
+            return (
+                "thread_standard",
+                "thread_size",
+                "diameter_mm",
+                "pitch_mm",
+                "tap_type",
+                "tool_material",
+            )
+        if family == "indexable":
+            return (
+                "cutter_diameter_mm",
+                "insert_count",
+                "insert_shape",
+                "insert_code",
+                "insert_grade",
+                "cutter_type",
+                "stickout_mm",
+            )
+        return (
+            "diameter_mm",
+            "flute_count",
+            "tool_material",
+            "coating",
+            "stickout_mm",
+            "cutting_edge_length_mm",
+            "corner_radius_mm",
+        )
+
+    def _tool_definition_values(self, tool_type: str | None = None) -> dict[str, Any]:
+        tool = tool_type or self.tool_combo.currentText()
+        page = self.pages[tool_family(tool)]
+        values = page.values()
+        return {
+            key: values[key]
+            for key in self._tool_definition_keys(tool)
+            if key in values
+        }
+
+    def _refresh_saved_tools(self, selected_id: int | None = None) -> None:
+        if not hasattr(self, "saved_tool_combo"):
+            return
+        current = self.saved_tool_combo.currentData()
+        if selected_id is None and isinstance(current, dict):
+            try:
+                selected_id = int(current.get("id"))
+            except (TypeError, ValueError):
+                selected_id = None
+        rows = self.database.saved_tools()
+        self.saved_tool_combo.blockSignals(True)
+        self.saved_tool_combo.clear()
+        self.saved_tool_combo.addItem("Choose a saved tool…", None)
+        selected_index = 0
+        for row in rows:
+            self.saved_tool_combo.addItem(str(row.get("name", "Saved tool")), row)
+            if selected_id is not None and row.get("id") == selected_id:
+                selected_index = self.saved_tool_combo.count() - 1
+        self.saved_tool_combo.setCurrentIndex(selected_index)
+        self.saved_tool_combo.blockSignals(False)
+        self.delete_tool_button.setEnabled(selected_index > 0)
+
+    def _saved_tool_selected(self, index: int) -> None:
+        row = self.saved_tool_combo.itemData(index)
+        self.delete_tool_button.setEnabled(isinstance(row, dict))
+        if not isinstance(row, dict):
+            return
+        try:
+            row = self.database.get_saved_tool(int(row["id"])) or row
+        except (KeyError, TypeError, ValueError):
+            pass
+        try:
+            stored = json.loads(row.get("tool_json", "{}"))
+        except (TypeError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Saved tool", f"This saved tool could not be loaded: {exc}")
+            return
+        if not isinstance(stored, dict):
+            QMessageBox.warning(self, "Saved tool", "This saved tool does not contain a valid tool definition.")
+            return
+        values = stored.get("parameters", stored)
+        if not isinstance(values, dict):
+            QMessageBox.warning(self, "Saved tool", "This saved tool does not contain valid tool fields.")
+            return
+
+        stored_tool_type = str(row.get("tool_type", ""))
+        active_tool_type = compatible_tool_type(stored_tool_type) or stored_tool_type
+        if not active_tool_type or not any(
+            self.tool_combo.itemText(item).casefold() == active_tool_type.casefold()
+            for item in range(self.tool_combo.count())
+        ):
+            QMessageBox.warning(self, "Saved tool", f"Tool type '{stored_tool_type}' is not available in this release.")
+            return
+
+        self._loading_saved_tool = True
+        try:
+            self._set_combo_casefold(self.tool_combo, active_tool_type)
+            page = self.pages[tool_family(self.tool_combo.currentText())]
+            page.load_values({key: values[key] for key in self._tool_definition_keys(active_tool_type) if key in values})
+        finally:
+            self._loading_saved_tool = False
+        self.result_status.setText(f"Loaded saved tool: {row.get('name', 'Saved tool')}")
+        self._save_calculator_state()
+
+    def _save_current_tool(self) -> None:
+        tool_type = self.tool_combo.currentText().strip()
+        if not tool_type:
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            "Save tool",
+            "Tool name:",
+            QLineEdit.Normal,
+            "",
+        )
+        if not accepted:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Save tool", "Enter a name for this saved tool.")
+            return
+        self.database.save_tool(
+            name,
+            tool_type,
+            {
+                "version": 1,
+                "tool_type": tool_type,
+                "parameters": self._tool_definition_values(tool_type),
+            },
+        )
+        rows = self.database.saved_tools()
+        selected = next((int(row["id"]) for row in rows if str(row["name"]).casefold() == name.casefold()), None)
+        self._refresh_saved_tools(selected)
+        self.result_status.setText(f"Saved tool: {name}")
+
+    def _delete_selected_tool(self) -> None:
+        row = self.saved_tool_combo.currentData()
+        if not isinstance(row, dict):
+            return
+        name = str(row.get("name", "saved tool"))
+        answer = QMessageBox.question(
+            self,
+            "Remove saved tool",
+            f"Remove '{name}' from the local tool library?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.database.delete_saved_tool(int(row["id"]))
+        self._refresh_saved_tools()
+        self.result_status.setText(f"Removed saved tool: {name}")
 
     def _machine(self) -> MachineProfile:
         return self.machine_profiles.get(
@@ -903,6 +1107,8 @@ class MainWindow(QMainWindow):
             model="saved recent calculation",
             validated_response=json.dumps(result.to_dict(), indent=2),
         )
+        self._current_request = self._collect_request()
+        self._current_machine = self._machine()
         self._show_result(outcome)
         self.result_status.setText("Reopened recent calculation")
         self._save_calculator_state()
@@ -933,8 +1139,11 @@ class MainWindow(QMainWindow):
         self._reset_result_display()
         self.result_status.setText("Calculating machining parameters…")
         worker_service = CalculationService(self.database, ai_service)
+        machine = self._machine()
+        self._current_request = request
+        self._current_machine = machine
         self._thread = QThread(self)
-        self._worker = CalculationWorker(worker_service, request, self._machine())
+        self._worker = CalculationWorker(worker_service, request, machine)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._calculation_finished)
@@ -949,6 +1158,10 @@ class MainWindow(QMainWindow):
         self.machine_combo.setEnabled(not calculating)
         self.material_combo.setEnabled(not calculating)
         self.tool_combo.setEnabled(not calculating)
+        self.saved_tool_combo.setEnabled(not calculating)
+        self.save_tool_button.setEnabled(not calculating)
+        self.delete_tool_button.setEnabled(not calculating and self.saved_tool_combo.currentIndex() > 0)
+        self.workshop_button.setEnabled(not calculating and self._current_outcome is not None)
 
     def _cancel_calculation(self) -> None:
         if self._worker:
@@ -976,6 +1189,9 @@ class MainWindow(QMainWindow):
         self._populate_failure_debug(message, context)
         self._show_error(message)
         self.result_status.setText("Calculation could not be completed")
+        self._current_outcome = None
+        self._current_request = None
+        self._current_machine = None
         if not self.settings.mock_mode and self.settings_service.get_api_key_source() != "none":
             self._api_error = True
         self._set_calculating(False)
@@ -1050,6 +1266,8 @@ class MainWindow(QMainWindow):
 
     def _reset_result_display(self) -> None:
         self._current_outcome = None
+        self._current_request = None
+        self._current_machine = None
         self._apply_result_layout(tool_family(self.tool_combo.currentText()))
         for values in (self.result_fields, self.info_labels, self.derived_labels, self.ai_context_labels):
             for value in values.values():
@@ -1058,6 +1276,7 @@ class MainWindow(QMainWindow):
         self.result_status.setText("Ready to calculate")
         self.result_banner.setVisible(False)
         self.retry_button.setVisible(False)
+        self.workshop_button.setVisible(False)
         self.ai_context_group.setVisible(False)
         self.notes.clear()
         self.notes.setPlaceholderText("AI machining notes and warnings will appear here.")
@@ -1139,9 +1358,93 @@ class MainWindow(QMainWindow):
         self.result_banner.setText(banner)
         self.result_banner.setVisible(True)
         self.retry_button.setVisible(False)
+        self.workshop_button.setVisible(outcome.source != "mock")
+        self.workshop_button.setEnabled(not bool(self._thread))
         self._populate_debug(outcome)
         if any("Incompatible Reamer peck data discarded locally" in item for item in outcome.validation_corrections):
             self.debug_button.setChecked(True)
+
+    def _open_workshop_preference(self) -> None:
+        outcome = self._current_outcome
+        if outcome is None or outcome.source == "mock":
+            QMessageBox.information(
+                self,
+                "Workshop setting",
+                "Run a live or cached calculation before saving a workshop setting. Mock results are not production data.",
+            )
+            return
+        family = tool_family(self.tool_combo.currentText())
+        editable = tuple(
+            key for key in result_layout_for_family(family).primary
+            if key != "peck_mm"
+        )
+        dialog = WorkshopPreferenceDialog(outcome.result, editable, self)
+        if dialog.exec() != dialog.Accepted:
+            return
+        preferred = outcome.result.copy()
+        for key, value in dialog.values().items():
+            if key == "stepover_mm":
+                preferred.stepover_mm = value if value > 0 else None
+                if family in {"end_mill", "indexable"}:
+                    preferred.radial_doc_mm = value if value > 0 else None
+            else:
+                original = getattr(preferred, key, None)
+                setattr(preferred, key, value if value > 0 or original is not None else None)
+        self._save_workshop_result(preferred)
+
+    def _save_workshop_result(self, preferred: MachiningResult) -> None:
+        """Validate and persist a user override without replacing AI data."""
+
+        outcome = self._current_outcome
+        if outcome is None or outcome.source == "mock":
+            return
+        request = self._current_request or self._collect_request()
+        machine = self._current_machine or self._machine()
+        preferred = self._sync_workshop_feed(preferred, request)
+        try:
+            validated, corrections = validate_and_correct_result(preferred, request, machine)
+            service = CalculationService(self.database, self.ai_service or self._make_ai_service())
+            service.save_workshop_preference(outcome, validated)
+        except (CalculationInputError, ValueError) as exc:
+            QMessageBox.warning(self, "Workshop setting", str(exc))
+            return
+
+        workshop_outcome = replace(
+            outcome,
+            result=validated,
+            source="workshop",
+            cache_hit=True,
+            model="local workshop setting",
+            validated_response=json.dumps(validated.to_dict(), ensure_ascii=False, sort_keys=True),
+            validation_corrections=list(outcome.validation_corrections) + corrections,
+        )
+        self._show_result(workshop_outcome)
+        self.result_status.setText("Saved workshop setting")
+
+    @staticmethod
+    def _sync_workshop_feed(result: MachiningResult, request: MachiningRequest) -> MachiningResult:
+        """Make an edited feed the authoritative value before local validation."""
+
+        adjusted = result.copy()
+        if adjusted.rpm is None or adjusted.rpm <= 0 or adjusted.feed_mm_min is None or adjusted.feed_mm_min < 0:
+            return adjusted
+        family = tool_family(request.tool_type)
+        if family in {"drill", "reamer"}:
+            adjusted.feed_per_rev_mm = adjusted.feed_mm_min / adjusted.rpm
+        elif family == "tap":
+            pitch = MainWindow._parameter_number(request.parameters, "pitch_mm")
+            rigid = str(request.parameters.get("rigid_tapping", "true")).strip().casefold() in {
+                "1", "true", "yes", "on"
+            }
+            if rigid and pitch is not None and pitch > 0:
+                adjusted.feed_per_rev_mm = pitch
+            else:
+                adjusted.feed_per_rev_mm = adjusted.feed_mm_min / adjusted.rpm
+        else:
+            count = MainWindow._parameter_number(request.parameters, "flute_count", "insert_count")
+            if count is not None and count > 0:
+                adjusted.feed_per_tooth_mm = adjusted.feed_mm_min / (adjusted.rpm * count)
+        return adjusted
 
     @staticmethod
     def _parameter_number(parameters: dict[str, Any], *names: str) -> float | None:
