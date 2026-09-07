@@ -155,3 +155,39 @@ def is_legacy_operation(operation: str) -> bool:
     value = str(operation or "").strip().casefold()
     return value in {item.casefold() for item in LEGACY_MILLING_OPERATIONS}
 
+
+def legacy_operation_warning(tool_type: str, operation: str) -> str:
+    if operations_for_tool(tool_type) and is_legacy_operation(operation):
+        return (f"This saved calculation uses the legacy operation '{operation}'. "
+                "Select a current ENCY operation before recalculating.")
+    return ""
+
+
+def active_parameters(tool_type: str, operation: str, parameters: dict) -> dict:
+    """Filter machining inputs by meaning, independently of widget visibility."""
+    result = dict(parameters)
+    if operations_for_tool(tool_type):
+        config = operation_field_config(operation)
+        for key, applicable in {
+            "axial_doc_mm": config.show_axial,
+            "radial_doc_mm": config.show_radial,
+            "stock_remaining_mm": config.show_stock,
+            "pocket_depth_mm": config.show_pocket,
+            "material_thickness_mm": config.show_material_thickness,
+            "finish_priority": config.show_finish_priority,
+            "ball_nose_mode": tool_type.casefold() == "ball nose end mill",
+            "ball_nose_contact": tool_type.casefold() == "ball nose end mill",
+            "surface_finish_priority": tool_type.casefold() == "ball nose end mill",
+            "corner_radius_mm": tool_type.casefold() == "bull nose / corner radius end mill",
+        }.items():
+            if not applicable:
+                result.pop(key, None)
+    # Stock remaining is intentionally retained: zero can mean actual zero stock.
+    optional_zero = {"existing_pilot_hole_diameter_mm", "corner_radius_mm",
+                     "cutting_edge_length_mm", "flute_length_mm", "known_reaming_allowance_mm"}
+    if tool_type.casefold() == "reamer":
+        optional_zero.add("flute_count")
+    if tool_type.casefold() == "tap":
+        optional_zero.add("existing_hole_diameter_mm")
+    return {key: value for key, value in result.items()
+            if not (key in optional_zero and not isinstance(value, bool) and value == 0)}

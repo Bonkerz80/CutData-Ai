@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config.operations import (
+    active_parameters,
     operation_field_config,
     operations_for_tool,
 )
@@ -195,6 +196,10 @@ class FieldPage(QWidget):
             elif isinstance(widget, (QDoubleSpinBox, QSpinBox)):
                 result[key] = widget.value()
         return result
+
+    def request_values(self, tool_type: str) -> dict[str, Any]:
+        values = self.values()
+        return active_parameters(tool_type, str(values.get("operation", "")), values)
 
     def load_values(self, values: dict[str, Any]) -> None:
         for key, value in values.items():

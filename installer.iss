@@ -1,5 +1,5 @@
 #define MyAppName "CutData AI"
-#define MyAppVersion "0.1.9"
+#define MyAppVersion "0.1.10"
 #define MyAppPublisher "PPT"
 #define MyAppURL "https://www.ppt-eng.co.uk/"
 #define MyAppSupportURL "https://github.com/Bonkerz80/CutData-AI"

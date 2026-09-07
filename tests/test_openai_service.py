@@ -38,7 +38,9 @@ def test_responses_api_uses_strict_json_schema_and_reasoning():
     assert "peck_recommended must be true or false, never null" in instructions
     assert "Roughing\n  Waterline is Z-level/material-removal roughing" in instructions
     assert "Flat\n  Land Finishing is for horizontal flats or lands" in instructions
-    assert "positive Q increment" in instructions
+    assert "positive finite Q increment" in instructions
+    assert "peck_mm MUST be null" in instructions
+    assert "Never return a Q value with a false no-peck decision" in instructions
     assert "recommended_cycle" in instructions
     assert "For every Reamer request" in instructions
     assert "peck_recommended to false" in instructions

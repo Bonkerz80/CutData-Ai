@@ -99,11 +99,13 @@ def _number(value: Any, field_name: str) -> float | None:
 
 
 def validate_drilling_peck(result: MachiningResult) -> None:
-    """Reject an incomplete positive decision without choosing Q locally."""
+    """Reject incomplete or contradictory decisions without choosing Q locally."""
 
     decision = result.peck_recommended
     if decision is not None and not isinstance(decision, bool):
         raise StructuredResponseError("Peck recommendation must be boolean or null")
+    if decision is False and result.peck_mm is not None:
+        raise StructuredResponseError("Peck recommendation is false but a Q value was supplied; peck_mm must be null")
     if decision is True:
         peck = _number(result.peck_mm, "peck_mm")
         if peck is None or peck <= 0:

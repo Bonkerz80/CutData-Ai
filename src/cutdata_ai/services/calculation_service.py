@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from typing import Any
 
 from ..config.constants import tool_family
+from ..config.operations import active_parameters, legacy_operation_warning
 from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import StructuredResponseError, result_from_dict, result_from_json, validate_drilling_peck
@@ -60,6 +62,9 @@ def validate_request(request: MachiningRequest, machine: MachineProfile) -> tupl
 
     errors: list[str] = []
     warnings: list[str] = []
+    legacy_warning = legacy_operation_warning(request.tool_type, request.operation)
+    if legacy_warning:
+        errors.append(legacy_warning)
     p = request.parameters
     family = tool_family(request.tool_type)
     diameter = _number(p, "diameter_mm", "cutter_diameter_mm")
@@ -292,6 +297,7 @@ class CalculationService:
         self.last_failure_context: dict[str, Any] = {}
 
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> CalculationOutcome:
+        request = replace(request, parameters=active_parameters(request.tool_type, request.operation, request.parameters))
         normalized = normalize_request(request)
         cache_key = request_hash(normalized)
         self.last_failure_context = {

@@ -338,59 +338,15 @@ def test_legacy_recent_record_reopens_without_reintroducing_removed_choice(windo
     assert window._current_outcome.request_hash == "legacy-slot-hash"
 
 
-def test_saved_tool_library_loads_definition_and_tracks_use(window, qapp):
+def test_saved_tools_and_workshop_editor_are_dormant(window, qapp):
     window.database.save_tool("Legacy tool", "End Mill", {"diameter_mm": 12})
-    window._refresh_saved_tools()
-
-    assert window.saved_tool_combo.count() == 2
-    assert window.saved_tool_combo.itemText(1) == "Legacy tool"
-    assert window.delete_tool_button.isEnabled() is False
-
-    window.saved_tool_combo.setCurrentIndex(1)
-    qapp.processEvents()
-
-    assert window.tool_combo.currentText() == "End Mill"
-    assert window.pages["end_mill"].fields["diameter_mm"].value() == 12
-    assert window.delete_tool_button.isEnabled() is True
-    assert window.database.saved_tools()[0]["use_count"] == 1
-
-
-def test_workshop_override_keeps_ai_result_and_saves_authoritative_feed(window, qapp):
-    window.tool_combo.setCurrentText("Drill")
-    window._update_tool_page()
-    original = MachiningResult(
-        rpm=2450,
-        feed_mm_min=365,
-        feed_per_rev_mm=0.149,
-        cutting_speed_m_min=169.2,
-        peck_recommended=False,
-        confidence="high",
-    )
-    window._current_outcome = outcome(normalized_request("Drill", {"diameter_mm": 22}), original)
-    window._current_request = MachiningRequest(
-        machine="Generic CNC Mill",
-        material="Mild Steel",
-        tool_type="Drill",
-        operation="Drilling",
-        parameters={"diameter_mm": 22, "tool_material": "HSS", "hole_depth_mm": 20},
-    )
-    window._current_machine = MachineProfile("Generic CNC Mill", 12000, 10000)
-
-    preferred = original.copy()
-    preferred.rpm = 2200
-    preferred.feed_mm_min = 330
-    window._save_workshop_result(preferred)
-    qapp.processEvents()
-
-    assert window._current_outcome is not None
-    assert window._current_outcome.source == "workshop"
-    assert window._current_outcome.result.rpm == 2200
-    assert window._current_outcome.result.feed_mm_min == 330
-    assert window._current_outcome.result.feed_per_rev_mm == pytest.approx(0.15)
-    stored = window.database.get_preferred_result("exact-test-hash")
-    assert stored is not None
-    assert json.loads(stored["ai_result_json"])["rpm"] == 2450
-    assert json.loads(stored["preferred_result_json"])["rpm"] == 2200
+    assert not hasattr(window, "saved_tool_combo")
+    assert not hasattr(window, "workshop_button")
+    texts = {button.text() for button in window.findChildren(QPushButton)}
+    assert not texts.intersection({"Save current", "Remove", "Adjust / save workshop setting"})
+    window._show_result(outcome(normalized_request("Drill", {}), MachiningResult(rpm=800, feed_mm_min=80)))
+    assert not hasattr(window, "workshop_button")
+    assert window.database.saved_tools()[0]["name"] == "Legacy tool"
 
 
 @pytest.mark.parametrize(

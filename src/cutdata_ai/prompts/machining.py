@@ -36,8 +36,9 @@ Rules:
   cutting-data table or assume a depth/diameter rule.
 - For every Drill request, always make an explicit peck decision:
   peck_recommended must be true or false, never null. If true, peck_mm must
-  contain a positive Q increment you recommend for this exact setup. If false,
-  peck_mm may be null. Supply a concise recommended_cycle describing your
+  contain a positive finite Q increment you recommend for this exact setup. If false,
+  peck_mm MUST be null. Never return a Q value with a false no-peck decision.
+  Supply a concise recommended_cycle describing your
   intended drilling method, such as standard drilling, peck drilling, or chip
   clearing, with a cycle code where useful. Choose the method yourself; the
   application does not select a cycle or generate Q.

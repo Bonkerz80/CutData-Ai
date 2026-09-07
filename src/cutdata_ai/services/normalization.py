@@ -8,6 +8,7 @@ import math
 from typing import Any
 
 from ..models.domain import MachiningRequest
+from ..config.operations import active_parameters
 
 
 def _normalise_value(value: Any) -> Any:
@@ -33,7 +34,9 @@ def _normalise_value(value: Any) -> Any:
 def normalize_request(request: MachiningRequest) -> dict[str, Any]:
     """Return a stable, JSON-compatible representation of a request."""
 
-    return _normalise_value(request.to_dict())
+    value = request.to_dict()
+    value["parameters"] = active_parameters(request.tool_type, request.operation, request.parameters)
+    return _normalise_value(value)
 
 
 def canonical_json(value: dict[str, Any]) -> str:
@@ -42,4 +45,3 @@ def canonical_json(value: dict[str, Any]) -> str:
 
 def request_hash(normalized_request: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(normalized_request).encode("utf-8")).hexdigest()
-
