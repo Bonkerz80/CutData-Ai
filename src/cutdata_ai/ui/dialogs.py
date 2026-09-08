@@ -48,7 +48,12 @@ from ..services.openai_service import (
     OpenAIService,
     connection_result_for_exception,
 )
-from ..services.settings_service import SettingsService
+from ..services.settings_service import (
+    API_KEY_SOURCE_ENVIRONMENT,
+    API_KEY_SOURCE_NONE,
+    API_KEY_SOURCE_SAVED,
+    SettingsService,
+)
 from .theme import apply_theme
 from .widgets import AppearanceSwitch, ModeSwitch
 
@@ -261,17 +266,37 @@ class SettingsDialog(QDialog):
         status_heading = QLabel("API STATUS")
         status_heading.setObjectName("formHeading")
         api_layout.addWidget(status_heading)
+        source_form = QFormLayout()
+        self.api_key_source = QComboBox()
+        self.api_key_source.addItem("SAVED KEY", API_KEY_SOURCE_SAVED)
+        self.api_key_source.addItem("ENVIRONMENT VARIABLE", API_KEY_SOURCE_ENVIRONMENT)
+        self.api_key_source.addItem("NO ACTIVE KEY", API_KEY_SOURCE_NONE)
+        self.api_key_source.currentIndexChanged.connect(self._source_changed)
+        source_form.addRow("API key source", self.api_key_source)
+        api_layout.addLayout(source_form)
         status_form = QFormLayout()
         self.saved_key_status = QLabel()
         self.environment_key_status = QLabel()
         self.active_key_source = QLabel()
-        for label in (self.saved_key_status, self.environment_key_status, self.active_key_source):
+        self.key_comparison_status = QLabel()
+        for label in (
+            self.saved_key_status,
+            self.environment_key_status,
+            self.active_key_source,
+            self.key_comparison_status,
+        ):
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         status_form.addRow("Saved key", self.saved_key_status)
         status_form.addRow("Environment key", self.environment_key_status)
         status_form.addRow("Active source", self.active_key_source)
+        status_form.addRow("Key comparison", self.key_comparison_status)
         api_layout.addLayout(status_form)
-        for value_label in (self.saved_key_status, self.environment_key_status, self.active_key_source):
+        for value_label in (
+            self.saved_key_status,
+            self.environment_key_status,
+            self.active_key_source,
+            self.key_comparison_status,
+        ):
             value_label.setObjectName("statusValue")
             status_form.labelForField(value_label).setObjectName("statusLabel")
 
@@ -284,10 +309,18 @@ class SettingsDialog(QDialog):
         self.api_key.setPlaceholderText("Leave blank to keep the currently saved key")
         self.api_key.setToolTip("Keys are stored locally using Windows encryption; the field never shows the saved key.")
         api_form.addRow("API key", self.api_key)
-        key_hint = QLabel("Leave blank to keep the currently saved key. OPENAI_API_KEY overrides it when detected.")
+        key_hint = QLabel(
+            "Leave blank to keep the currently saved key. A new entered key can replace the saved key."
+        )
         key_hint.setObjectName("hint")
         key_hint.setWordWrap(True)
         api_form.addRow("", key_hint)
+        environment_hint = QLabel(
+            "Environment keys are managed in Windows. Restart CutData AI after changing OPENAI_API_KEY."
+        )
+        environment_hint.setObjectName("hint")
+        environment_hint.setWordWrap(True)
+        api_form.addRow("", environment_hint)
         api_layout.addLayout(api_form)
 
         key_actions = QHBoxLayout()
@@ -347,17 +380,41 @@ class SettingsDialog(QDialog):
     def _environment_key_available(self) -> bool:
         return self.settings_service.get_api_key_status().environment_detected
 
+    @staticmethod
+    def _source_label(source: str) -> str:
+        return {
+            API_KEY_SOURCE_ENVIRONMENT: "OPENAI_API_KEY environment variable",
+            API_KEY_SOURCE_SAVED: "Windows encrypted saved key",
+            API_KEY_SOURCE_NONE: "None",
+        }.get(source, "None")
+
+    def _selected_api_key_source(self) -> str:
+        source = self.api_key_source.currentData()
+        return source if source in {
+            API_KEY_SOURCE_ENVIRONMENT,
+            API_KEY_SOURCE_SAVED,
+            API_KEY_SOURCE_NONE,
+        } else API_KEY_SOURCE_NONE
+
+    def _source_changed(self, _index: int) -> None:
+        self.active_key_source.setText(self._source_label(self._selected_api_key_source()))
+
     def _refresh_api_status(self) -> None:
         status = self.settings_service.get_api_key_status()
         self.saved_key_status.setText("Configured" if status.saved_configured else "Not configured")
         self.environment_key_status.setText("Detected" if status.environment_detected else "Not detected")
-        self.active_key_source.setText(
-            {
-                "environment": "OPENAI_API_KEY environment variable",
-                "saved": "Windows encrypted saved key",
-                "none": "None",
-            }[status.source]
-        )
+        self.api_key_source.blockSignals(True)
+        source_index = self.api_key_source.findData(status.source)
+        self.api_key_source.setCurrentIndex(source_index if source_index >= 0 else self.api_key_source.count() - 1)
+        self.api_key_source.blockSignals(False)
+        self.active_key_source.setText(self._source_label(status.source))
+        if status.keys_match is True:
+            comparison = "MATCH"
+        elif status.keys_match is False:
+            comparison = "DIFFERENT"
+        else:
+            comparison = "Not comparable"
+        self.key_comparison_status.setText(comparison)
 
     def _clear_key(self) -> None:
         self._clear_requested = True
@@ -371,14 +428,27 @@ class SettingsDialog(QDialog):
 
     def _candidate_api_key(self) -> str:
         entered = self.api_key.text().strip()
-        if entered:
+        source = self._selected_api_key_source()
+        if source == API_KEY_SOURCE_SAVED and entered:
             return entered
-        if self._clear_requested:
+        if source == API_KEY_SOURCE_SAVED:
+            return "" if self._clear_requested else self.settings_service.get_saved_api_key()
+        if source == API_KEY_SOURCE_ENVIRONMENT:
             return self.settings_service.get_environment_api_key()
-        return self.settings_service.get_api_key()
+        return ""
 
     def _test_connection(self) -> None:
         if self._connection_thread is not None:
+            return
+        source = self._selected_api_key_source()
+        if source == API_KEY_SOURCE_ENVIRONMENT and self.api_key.text().strip():
+            self._show_connection_result(
+                ConnectionTestResult(
+                    False,
+                    "inactive_key",
+                    "Entered saved key is not the selected API source\nSelect SAVED KEY to test it.",
+                )
+            )
             return
         api_key = self._candidate_api_key()
         if not api_key:
@@ -386,7 +456,7 @@ class SettingsDialog(QDialog):
                 ConnectionTestResult(
                     False,
                     "no_key",
-                    "No API key configured\nEnter a key or set OPENAI_API_KEY in Settings.",
+                    "No active API key configured\nSelect a source with a key or enter a new saved key.",
                 )
             )
             return
@@ -414,7 +484,10 @@ class SettingsDialog(QDialog):
         self._set_connection_testing(False)
 
     def _show_connection_result(self, result: ConnectionTestResult) -> None:
-        self.connection_status.setText(result.message)
+        message = result.message
+        if result.success and not message.startswith("API VERIFIED"):
+            message = f"API VERIFIED\n{message}"
+        self.connection_status.setText(message)
         self.connection_status.setObjectName("connectionSuccess" if result.success else "connectionWarning")
         self.connection_status.setToolTip(result.technical_detail)
         self.connection_status.style().unpolish(self.connection_status)
@@ -426,6 +499,7 @@ class SettingsDialog(QDialog):
         self.model.setEnabled(not testing)
         self.reasoning.setEnabled(not testing)
         self.mock_mode.setEnabled(not testing)
+        self.api_key_source.setEnabled(not testing)
         self.clear_key_button.setEnabled(not testing)
         self.test_connection_button.setEnabled(not testing)
         self.dialog_buttons.setEnabled(not testing)
@@ -466,15 +540,23 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Check machine profiles", str(exc))
             return
 
+        selected_source = self._selected_api_key_source()
+        entered_key = self.api_key.text().strip()
+        if getattr(self, "_clear_requested", False):
+            self.settings_service.clear_saved_api_key()
+            if selected_source == API_KEY_SOURCE_SAVED and self.settings_service.get_environment_api_key():
+                selected_source = API_KEY_SOURCE_ENVIRONMENT
+            elif selected_source == API_KEY_SOURCE_SAVED:
+                selected_source = API_KEY_SOURCE_NONE
+        elif entered_key:
+            self.settings_service.save_api_key(entered_key)
+
         self.settings.model = self.model.currentText()
         self.settings.reasoning_effort = self.reasoning.currentText()
         self.settings.appearance = self.appearance_switch.appearance
         self.settings.mock_mode = self.mock_mode.isChecked()
+        self.settings.api_key_source = selected_source
         self.settings_service.save(self.settings)
-        if getattr(self, "_clear_requested", False):
-            self.settings_service.clear_saved_api_key()
-        elif self.api_key.text().strip():
-            self.settings_service.save_api_key(self.api_key.text())
         self._theme_saved = True
         self.accept()
 

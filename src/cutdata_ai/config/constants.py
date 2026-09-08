@@ -30,8 +30,8 @@ from .branding import (
 )
 
 
-APP_VERSION = "0.1.11"
-PROMPT_VERSION = "2026-09-07.2"
+APP_VERSION = "0.1.12"
+PROMPT_VERSION = "2026-09-07.3"
 SCHEMA_VERSION = "2"
 DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_REASONING_EFFORT = "medium"
@@ -67,7 +67,7 @@ MACHINE_PROFILES = (
     },
     {
         "name": "HAAS VF-2",
-        "max_rpm": 12000.0,
+        "max_rpm": 8000.0,
         "max_feed_mm_min": 10000.0,
         "spindle_power_kw": None,
         "coolant_capability": "Flood coolant; internal coolant configurable",
@@ -164,7 +164,19 @@ LEGACY_TOOL_FAMILY_BY_TYPE = {
 
 DRILL_TOOL_MATERIALS = ("HSS", "HSS-Co / Cobalt", "Carbide", "Indexable")
 MILL_TOOL_MATERIALS = ("Carbide", "HSS", "HSS-Co / Cobalt")
-COATINGS = ("Uncoated", "TiN", "TiCN", "TiAlN", "AlTiN", "Other")
+COATINGS = (
+    "Uncoated",
+    "TiN",
+    "TiCN",
+    "TiAlN",
+    "AlTiN",
+    "Cupro (ITC)",
+    "AlCrN",
+    "ZrN",
+    "DLC",
+    "CVD Diamond",
+    "Other / Proprietary",
+)
 COOLANTS = ("Flood coolant", "Through-tool coolant", "Mist", "Air blast", "None / dry")
 
 

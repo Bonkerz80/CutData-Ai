@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import ctypes.wintypes
+import hmac
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -87,6 +88,8 @@ class ApiKeyStatus:
     saved_configured: bool
     environment_detected: bool
     source: str
+    keys_match: bool | None = None
+    selected_source_configured: bool = False
 
 
 class SettingsService:
@@ -95,7 +98,8 @@ class SettingsService:
 
     def load(self) -> AppSettings:
         stored_mock_mode = self.database.get_setting("mock_mode")
-        mock_default = self.get_api_key_source() == API_KEY_SOURCE_NONE
+        api_key_source = self.get_active_api_key_source()
+        mock_default = api_key_source == API_KEY_SOURCE_NONE
         mock_mode = (
             self._as_bool(stored_mock_mode)
             if stored_mock_mode is not None
@@ -111,12 +115,21 @@ class SettingsService:
             last_material=self.database.get_setting("last_material", "Mild Steel") or "Mild Steel",
             last_tool_type=self.database.get_setting("last_tool_type", "Drill") or "Drill",
             last_coolant=self.database.get_setting("last_coolant", "Flood coolant") or "Flood coolant",
+            api_key_source=api_key_source,
         )
 
     def save(self, settings: AppSettings) -> None:
         settings.appearance = normalise_appearance(settings.appearance)
         values = asdict(settings)
         for key, value in values.items():
+            if key == "api_key_source" and value not in {
+                API_KEY_SOURCE_ENVIRONMENT,
+                API_KEY_SOURCE_SAVED,
+                API_KEY_SOURCE_NONE,
+            }:
+                # Preserve the selected source for callers that construct a
+                # partial AppSettings object without an API-source choice.
+                continue
             self.database.set_setting(key, ("1" if value else "0") if isinstance(value, bool) else str(value))
 
     def load_json_setting(self, key: str, default=None):
@@ -139,8 +152,20 @@ class SettingsService:
         )
 
     def get_api_key(self) -> str:
+        """Return the key selected by the persisted active source."""
+
+        source = self.get_active_api_key_source()
         environment_key, saved_key = self._read_api_keys()
-        return environment_key or saved_key
+        if source == API_KEY_SOURCE_ENVIRONMENT:
+            return environment_key
+        if source == API_KEY_SOURCE_SAVED:
+            return saved_key
+        return ""
+
+    def get_active_api_key(self) -> str:
+        """Alias used by calculation and connection-test call sites."""
+
+        return self.get_api_key()
 
     def get_environment_api_key(self) -> str:
         """Return the environment key, if present, without exposing it to UI code."""
@@ -154,32 +179,78 @@ class SettingsService:
         return str(SecretStore.unprotect(protected) or "").strip()
 
     def get_api_key_source(self) -> str:
-        """Return the active source using the documented priority order.
+        """Backward-compatible alias for the explicit active source."""
 
-        Environment key -> encrypted saved key -> no key.
+        return self.get_active_api_key_source()
+
+    def get_active_api_key_source(self) -> str:
+        """Return the selected source without silently falling back.
+
+        Existing installations are migrated once.  If both locations contain
+        different keys, the saved key is selected so the previous UI action of
+        entering a local key remains authoritative; matching keys retain the
+        previous environment-first behaviour.
         """
 
         environment_key, saved_key = self._read_api_keys()
-        if environment_key:
-            return API_KEY_SOURCE_ENVIRONMENT
-        if saved_key:
-            return API_KEY_SOURCE_SAVED
-        return API_KEY_SOURCE_NONE
+        stored = self.database.get_setting("api_key_source")
+        if stored in {
+            API_KEY_SOURCE_ENVIRONMENT,
+            API_KEY_SOURCE_SAVED,
+            API_KEY_SOURCE_NONE,
+        }:
+            if stored == API_KEY_SOURCE_ENVIRONMENT and not environment_key:
+                return API_KEY_SOURCE_NONE
+            if stored == API_KEY_SOURCE_SAVED and not saved_key:
+                return API_KEY_SOURCE_NONE
+            return stored
+
+        if environment_key and saved_key:
+            source = (
+                API_KEY_SOURCE_ENVIRONMENT
+                if hmac.compare_digest(environment_key, saved_key)
+                else API_KEY_SOURCE_SAVED
+            )
+        elif saved_key:
+            source = API_KEY_SOURCE_SAVED
+        elif environment_key:
+            source = API_KEY_SOURCE_ENVIRONMENT
+        else:
+            source = API_KEY_SOURCE_NONE
+        self.database.set_setting("api_key_source", source)
+        return source
+
+    def set_api_key_source(self, source: str) -> str:
+        """Persist a safe, supported active-source value."""
+
+        normalised = str(source or "").strip().casefold()
+        if normalised not in {
+            API_KEY_SOURCE_ENVIRONMENT,
+            API_KEY_SOURCE_SAVED,
+            API_KEY_SOURCE_NONE,
+        }:
+            normalised = API_KEY_SOURCE_NONE
+        self.database.set_setting("api_key_source", normalised)
+        return normalised
 
     def get_api_key_status(self) -> ApiKeyStatus:
         """Return key presence/source metadata without returning key material."""
 
         environment_key, saved_key = self._read_api_keys()
-        if environment_key:
-            source = API_KEY_SOURCE_ENVIRONMENT
-        elif saved_key:
-            source = API_KEY_SOURCE_SAVED
-        else:
-            source = API_KEY_SOURCE_NONE
+        source = self.get_active_api_key_source()
+        keys_match = None
+        if environment_key and saved_key:
+            keys_match = hmac.compare_digest(environment_key, saved_key)
+        selected_configured = bool(
+            (source == API_KEY_SOURCE_ENVIRONMENT and environment_key)
+            or (source == API_KEY_SOURCE_SAVED and saved_key)
+        )
         return ApiKeyStatus(
             saved_configured=bool(saved_key),
             environment_detected=bool(environment_key),
             source=source,
+            keys_match=keys_match,
+            selected_source_configured=selected_configured,
         )
 
     def save_api_key(self, api_key: str) -> None:
@@ -189,17 +260,26 @@ class SettingsService:
         protected = SecretStore.protect(api_key.strip())
         if protected:
             self.database.set_setting("openai_api_key", protected)
+            stored = self.database.get_setting("api_key_source")
+            if stored in {None, "", API_KEY_SOURCE_NONE}:
+                self.set_api_key_source(API_KEY_SOURCE_SAVED)
 
     def clear_saved_api_key(self) -> None:
         """Remove only the locally saved key; environment variables are untouched."""
 
         self.database.set_setting("openai_api_key", "")
+        if self.database.get_setting("api_key_source") == API_KEY_SOURCE_SAVED:
+            self.set_api_key_source(
+                API_KEY_SOURCE_ENVIRONMENT
+                if self.get_environment_api_key()
+                else API_KEY_SOURCE_NONE
+            )
 
     @staticmethod
     def _as_bool(value: str | None) -> bool:
         return (value or "").casefold() in {"1", "true", "yes", "on"}
 
     def _read_api_keys(self) -> tuple[str, str]:
-        """Read both key locations once while keeping priority in one place."""
+        """Read both key locations together without exposing their values to UI metadata."""
 
         return self.get_environment_api_key(), self.get_saved_api_key()

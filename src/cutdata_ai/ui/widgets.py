@@ -26,6 +26,7 @@ from ..config.operations import (
     operation_field_config,
     operations_for_tool,
 )
+from ..config.constants import COATINGS
 
 
 def combo(values: list[str] | tuple[str, ...], editable: bool = False) -> QComboBox:
@@ -215,6 +216,19 @@ class FieldPage(QWidget):
                     widget.setCurrentIndex(index)
                 elif widget.isEditable():
                     widget.setCurrentText(str(value))
+                elif key == "coating" and str(value).strip().casefold() == "other":
+                    # Older saved state used the shorter label.  Preserve it
+                    # safely under the centralized modern option.
+                    legacy_index = next(
+                        (
+                            candidate
+                            for candidate in range(widget.count())
+                            if widget.itemText(candidate).casefold() == "other / proprietary"
+                        ),
+                        -1,
+                    )
+                    if legacy_index >= 0:
+                        widget.setCurrentIndex(legacy_index)
                 elif key == "operation" and str(value).strip():
                     # Keep an old operation visible when reopening legacy
                     # state/history; new dropdowns still start with ENCY names.
@@ -240,7 +254,7 @@ class DrillPage(FieldPage):
         self.add_heading("Drill details")
         self.add_field("diameter_mm", "Diameter (mm)", double_spin(10.0))
         self.add_field("tool_material", "Tool material", combo(("HSS", "HSS-Co / Cobalt", "Carbide", "Indexable")))
-        self.add_field("coating", "Coating", combo(("Uncoated", "TiN", "TiCN", "TiAlN", "AlTiN", "Other")))
+        self.add_field("coating", "Coating", combo(COATINGS))
         self.add_field("hole_depth_mm", "Hole depth (mm)", double_spin(20.0, step=0.1))
         self.add_field("material_thickness_mm", "Material thickness (mm)", double_spin(25.0, step=0.1))
         self.add_field("hole_type", "Hole", combo(("Through hole", "Blind hole")))
@@ -336,7 +350,7 @@ class EndMillPage(FieldPage):
         self.add_field("diameter_mm", "Diameter (mm)", double_spin(10.0))
         self.add_field("flute_count", "Number of flutes", integer_spin(2, 50))
         self.add_field("tool_material", "Tool material", combo(("Carbide", "HSS", "HSS-Co / Cobalt")))
-        self.add_field("coating", "Coating", combo(("Uncoated", "TiN", "TiCN", "TiAlN", "AlTiN", "Other")))
+        self.add_field("coating", "Coating", combo(COATINGS))
         self.add_field("stickout_mm", "Tool stickout (mm)", double_spin(30.0, step=0.1))
         self.add_field("cutting_edge_length_mm", "Cutting edge length (mm, optional)", double_spin(0.0, step=0.1))
         self.add_field("corner_radius_mm", "Corner radius (mm, optional)", double_spin(0.0, step=0.1))

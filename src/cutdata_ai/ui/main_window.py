@@ -73,7 +73,12 @@ from ..services.openai_service import (
     OpenAIService,
     UnavailableOpenAIService,
 )
-from ..services.settings_service import SettingsService
+from ..services.settings_service import (
+    API_KEY_SOURCE_ENVIRONMENT,
+    API_KEY_SOURCE_NONE,
+    API_KEY_SOURCE_SAVED,
+    SettingsService,
+)
 from ..services.recent_summary import recent_item_text
 from .dialogs import AboutDialog, SettingsDialog
 from .result_layout import peck_display, result_layout_for_family, effective_lateral_value
@@ -921,7 +926,7 @@ class MainWindow(QMainWindow):
     def _make_ai_service(self):
         if self.settings.mock_mode:
             return MockOpenAIService(self.settings.model, self.settings.reasoning_effort)
-        api_key = self.settings_service.get_api_key()
+        api_key = self.settings_service.get_active_api_key()
         if not api_key:
             # The calculation service checks SQLite before calling this object,
             # so a cached/workshop result remains available offline.
@@ -1357,18 +1362,24 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _update_status(self) -> None:
+        source = self.settings_service.get_active_api_key_source()
+        source_label = {
+            API_KEY_SOURCE_ENVIRONMENT: "ENV KEY",
+            API_KEY_SOURCE_SAVED: "SAVED KEY",
+        }.get(source, "")
+        compact_model = model_display_name(self.settings.model).replace("GPT-5.6 ", "").upper()
         if self.settings.mock_mode:
             text = "MOCK MODE"
             self.status_badge.setObjectName("mockBadge")
             tooltip = "Development/mock mode is active. Results are not production data and are not cached."
         elif self._api_error:
-            text = "API ERROR"
+            text = f"API ERROR · {source_label}" if source_label else "API ERROR"
             self.status_badge.setObjectName("errorBadge")
             tooltip = "The last OpenAI operation failed. Open Settings to test the connection."
-        elif self.settings_service.get_api_key_source() != "none":
-            text = f"LIVE AI · {model_display_name(self.settings.model)}"
+        elif source != API_KEY_SOURCE_NONE:
+            text = f"LIVE AI · {compact_model} · {source_label}"
             self.status_badge.setObjectName("readyBadge")
-            tooltip = "Live OpenAI mode is active. The selected model can be changed in Settings."
+            tooltip = "Live OpenAI mode is active from the selected key source. Authentication is not implied by this status."
         else:
             text = "NO API KEY"
             self.status_badge.setObjectName("warningBadge")

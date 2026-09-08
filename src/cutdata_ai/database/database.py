@@ -129,6 +129,20 @@ class Database:
                         profile["rigidity"],
                     ),
                 )
+            # 0.1.12 corrects the shipped VF-2 limit.  Only the exact old
+            # shipped value is migrated; edited/custom limits are preserved.
+            connection.execute(
+                """
+                UPDATE machine_profiles
+                SET max_rpm = 8000.0
+                WHERE name = 'HAAS VF-2' COLLATE NOCASE
+                  AND max_rpm = 12000.0
+                  AND max_feed_mm_min = 10000.0
+                  AND spindle_power_kw IS NULL
+                  AND coolant_capability = 'Flood coolant; internal coolant configurable'
+                  AND rigidity = 'medium-high'
+                """
+            )
 
     # Cache ---------------------------------------------------------------
     def get_cache_record(self, request_hash: str, prompt_version: str = PROMPT_VERSION, schema_version: str = SCHEMA_VERSION):

@@ -50,14 +50,21 @@ def connection_result_for_exception(exc: Exception, model: str) -> ConnectionTes
     if status_code == 401 or any(token in name for token in ("authentication", "unauthorized")):
         category = "authentication"
         message = "Authentication failed\nCheck your OpenAI API key."
-    elif status_code in {400, 403, 404} or any(
-        token in name for token in ("permission", "notfound", "model")
-    ):
+    elif status_code == 403 or any(token in name for token in ("permission", "forbidden")):
+        category = "permission"
+        message = "Permission denied\nThe selected API key cannot access this request or model."
+    elif status_code == 404 or any(token in name for token in ("notfound", "modelnotfound")):
         category = "model_unavailable"
         message = (
             "Model unavailable\n"
             f"The API key works, but {model_display_name(model)} is not available to this account."
         )
+    elif status_code == 429 or any(token in name for token in ("ratelimit", "rate_limit", "quota")):
+        category = "rate_limit"
+        message = "Rate limit / quota\nThe API account is rate-limited or has insufficient quota."
+    elif status_code == 400 or any(token in name for token in ("badrequest", "invalidrequest")):
+        category = "request_rejected"
+        message = "Request rejected\nThe API accepted authentication but rejected the request."
     else:
         category = "network"
         message = "Network error\nUnable to reach OpenAI."

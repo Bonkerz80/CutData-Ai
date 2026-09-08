@@ -18,7 +18,7 @@ def fake_secret_store(monkeypatch):
     )
 
 
-def test_environment_key_takes_priority_over_saved_key(tmp_path, monkeypatch):
+def test_different_environment_and_saved_keys_select_saved_source(tmp_path, monkeypatch):
     fake_secret_store(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
     database = Database(tmp_path / "settings.sqlite3")
@@ -26,10 +26,51 @@ def test_environment_key_takes_priority_over_saved_key(tmp_path, monkeypatch):
     service.save_api_key("saved-secret")
 
     status = service.get_api_key_status()
-    assert service.get_api_key() == "environment-secret"
-    assert service.get_api_key_source() == API_KEY_SOURCE_ENVIRONMENT
+    assert service.get_api_key() == "saved-secret"
+    assert service.get_api_key_source() == API_KEY_SOURCE_SAVED
     assert status.saved_configured is True
     assert status.environment_detected is True
+    assert status.keys_match is False
+
+
+def test_matching_environment_and_saved_keys_keep_environment_source(tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "same-secret")
+    database = Database(tmp_path / "matching.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("same-secret")
+    database.set_setting("api_key_source", "")
+
+    status = service.get_api_key_status()
+    assert service.get_api_key() == "same-secret"
+    assert service.get_api_key_source() == API_KEY_SOURCE_ENVIRONMENT
+    assert status.keys_match is True
+
+
+def test_explicit_environment_source_is_authoritative_when_saved_key_differs(tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
+    database = Database(tmp_path / "explicit-source.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source(API_KEY_SOURCE_ENVIRONMENT)
+
+    assert service.get_api_key() == "environment-secret"
+    assert service.get_api_key_source() == API_KEY_SOURCE_ENVIRONMENT
+    assert service.load().api_key_source == API_KEY_SOURCE_ENVIRONMENT
+
+
+def test_explicit_missing_source_does_not_silently_fallback(tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
+    database = Database(tmp_path / "no-fallback.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source(API_KEY_SOURCE_SAVED)
+    service.clear_saved_api_key()
+
+    assert service.get_api_key() == "environment-secret"
+    assert service.get_api_key_source() == API_KEY_SOURCE_ENVIRONMENT
 
 
 def test_saved_key_is_detected_without_environment_key(tmp_path, monkeypatch):
@@ -52,6 +93,7 @@ def test_no_key_returns_none_source(tmp_path, monkeypatch):
     assert service.get_api_key() == ""
     assert service.get_api_key_source() == API_KEY_SOURCE_NONE
     assert service.get_api_key_status().source == API_KEY_SOURCE_NONE
+    assert service.get_api_key_status().keys_match is None
 
 
 def test_saved_key_prevents_mock_default_from_returning_after_restart(tmp_path, monkeypatch):

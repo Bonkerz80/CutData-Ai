@@ -46,7 +46,7 @@ CASES = [
 
 
 def main():
-    output = Path("build/visual-qa-0.1.11")
+    output = Path("build/visual-qa-0.1.12")
     output.mkdir(parents=True, exist_ok=True)
     app = QApplication([])
     app.setWindowIcon(QIcon(str(WINDOWS_ICON_PATH)))

@@ -101,7 +101,7 @@ def test_thread_mill_operation_names_are_current_but_end_mill_names_are_legacy(w
 
 def test_thread_mill_prompt_version_and_schema_contract():
     from src.cutdata_ai.prompts.machining import SYSTEM_PROMPT
-    assert PROMPT_VERSION == "2026-09-07.2"
+    assert PROMPT_VERSION == "2026-09-07.3"
     assert SCHEMA_VERSION == "2"
     assert "current Thread Mill" in SYSTEM_PROMPT
     assert "do not treat them as legacy" in SYSTEM_PROMPT

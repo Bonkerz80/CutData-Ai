@@ -42,3 +42,6 @@ class AppSettings:
     last_material: str = "Mild Steel"
     last_tool_type: str = "Drill"
     last_coolant: str = "Flood coolant"
+    # Empty means that a caller constructing AppSettings directly did not
+    # choose to change the persisted API-key source.
+    api_key_source: str = ""

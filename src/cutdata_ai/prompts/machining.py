@@ -21,6 +21,9 @@ Rules:
   material, coating, geometry, diameter, flute or insert count, engagement,
   stickout, hole depth, pilot hole, through/blind hole, coolant, machine
   limits, and rigidity.
+- Treat Cupro (ITC) as a distinct ITC proprietary high-performance coating
+  context for heat and wear resistance in steels and difficult materials. Do
+  not invent unpublished chemistry or collapse it into TiAlN or AlTiN.
 - Distinguish roughing from finishing, slotting from profiling, drilling from
   reaming, cutting from form tapping, ball-nose behaviour, and indexable
   cutter geometry.

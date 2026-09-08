@@ -47,10 +47,49 @@ def test_settings_dialog_blank_key_retains_saved_key_and_reports_both_sources(qa
     try:
         assert dialog.saved_key_status.text() == "Configured"
         assert dialog.environment_key_status.text() == "Detected"
-        assert dialog.active_key_source.text() == "OPENAI_API_KEY environment variable"
+        assert dialog.api_key_source.currentData() == "saved"
+        assert dialog.active_key_source.text() == "Windows encrypted saved key"
+        assert dialog.key_comparison_status.text() == "DIFFERENT"
         assert "secret" not in dialog.connection_status.text().casefold()
         dialog._save()
         assert service.get_saved_api_key() == "saved-secret"
+    finally:
+        close_widget(dialog, qapp)
+
+
+def test_settings_dialog_blocks_testing_typed_key_when_environment_source_is_selected(qapp, tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
+    database = Database(tmp_path / "inactive-entry.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source("environment")
+    dialog = SettingsDialog(database, service.load())
+
+    try:
+        dialog.api_key.setText("new-saved-secret")
+        dialog._test_connection()
+        assert dialog._connection_thread is None
+        assert "not the selected API source" in dialog.connection_status.text()
+        assert "new-saved-secret" not in dialog.connection_status.text()
+    finally:
+        close_widget(dialog, qapp)
+
+
+def test_settings_dialog_candidate_uses_new_entered_saved_key_exception(qapp, tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
+    database = Database(tmp_path / "entered-saved.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source("saved")
+    dialog = SettingsDialog(database, service.load())
+
+    try:
+        dialog.api_key.setText("new-saved-secret")
+        assert dialog._candidate_api_key() == "new-saved-secret"
+        dialog.api_key_source.setCurrentIndex(dialog.api_key_source.findData("environment"))
+        assert dialog._candidate_api_key() == "environment-secret"
     finally:
         close_widget(dialog, qapp)
 
@@ -68,6 +107,7 @@ def test_clear_saved_key_only_removes_local_key(qapp, tmp_path, monkeypatch):
         dialog._save()
         assert service.get_saved_api_key() == ""
         assert service.get_api_key() == "environment-secret"
+        assert service.get_api_key_source() == "environment"
     finally:
         close_widget(dialog, qapp)
 
@@ -140,7 +180,7 @@ def test_main_window_status_recognises_saved_key_and_service(qapp, tmp_path, mon
     window = MainWindow(database)
 
     try:
-        assert window.status_badge.text() == "LIVE AI · GPT-5.6 Luna"
+        assert window.status_badge.text() == "LIVE AI · LUNA · SAVED KEY"
         assert isinstance(window.ai_service, OpenAIService)
     finally:
         close_widget(window, qapp)
@@ -192,7 +232,33 @@ def test_settings_reload_rebuilds_active_service_without_restart(qapp, tmp_path,
         database.set_setting("mock_mode", "0")
         window._reload_settings()
         assert isinstance(window.ai_service, OpenAIService)
-        assert window.status_badge.text() == "LIVE AI · GPT-5.6 Luna"
+        assert window.status_badge.text() == "LIVE AI · LUNA · SAVED KEY"
+    finally:
+        close_widget(window, qapp)
+
+
+def test_calculation_service_uses_the_same_selected_key_source(qapp, tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
+    database = Database(tmp_path / "same-route.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source("saved")
+    database.set_setting("mock_mode", "0")
+
+    captured = []
+
+    class FakeOpenAIService:
+        def __init__(self, api_key, model, reasoning_effort):
+            captured.append(api_key)
+
+    monkeypatch.setattr("src.cutdata_ai.ui.main_window.OpenAIService", FakeOpenAIService)
+    window = MainWindow(database)
+    try:
+        assert captured[-1] == "saved-secret"
+        service.set_api_key_source("environment")
+        window._reload_settings()
+        assert captured[-1] == "environment-secret"
     finally:
         close_widget(window, qapp)
 

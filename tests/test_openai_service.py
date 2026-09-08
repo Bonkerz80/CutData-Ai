@@ -1,9 +1,11 @@
 import json
 
+import pytest
+
 from src.cutdata_ai.models.domain import MachiningRequest, MachineProfile
 from src.cutdata_ai.models.schema import MACHINING_RESULT_SCHEMA
 from src.cutdata_ai.database.database import Database
-from src.cutdata_ai.services.openai_service import OpenAIService
+from src.cutdata_ai.services.openai_service import OpenAIService, connection_result_for_exception
 
 
 class FakeResponses:
@@ -99,6 +101,32 @@ def test_connection_authentication_failure_is_clean():
     assert result.category == "authentication"
     assert result.message == "Authentication failed\nCheck your OpenAI API key."
     assert "secret-token" not in result.message
+
+
+@pytest.mark.parametrize("status,category,heading", [
+    (400, "request_rejected", "Request rejected"),
+    (403, "permission", "Permission denied"),
+    (404, "model_unavailable", "Model unavailable"),
+    (429, "rate_limit", "Rate limit / quota"),
+])
+def test_connection_http_failures_are_classified_without_secret_details(status, category, heading):
+    class HttpFailure(Exception):
+        status_code = status
+
+    result = connection_result_for_exception(HttpFailure("secret-value"), "gpt-5.6-luna")
+
+    assert result.category == category
+    assert result.message.startswith(heading)
+    assert "secret-value" not in result.message
+    assert f"HTTP {status}" in result.technical_detail
+
+
+def test_connection_timeout_is_classified_as_network_without_exception_text():
+    result = connection_result_for_exception(TimeoutError("secret-value"), "gpt-5.6-luna")
+
+    assert result.category == "network"
+    assert result.message == "Network error\nUnable to reach OpenAI."
+    assert "secret-value" not in result.message
 
 
 def test_connection_test_does_not_write_to_machining_cache(tmp_path):
