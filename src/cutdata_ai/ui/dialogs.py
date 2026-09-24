@@ -32,6 +32,10 @@ from ..config.constants import (
     COMPANY_NAME,
     COMPANY_WEBSITE,
     DEFAULT_MODEL,
+    DEFAULT_REASONING_EFFORT,
+    MODEL_DESCRIPTIONS,
+    REASONING_EFFORT_DISPLAY_NAMES,
+    SUPPORTED_REASONING_EFFORTS,
     WINDOWS_ICON_PATH,
     PRODUCT_DESCRIPTION,
     PRODUCT_TAGLINE,
@@ -40,6 +44,8 @@ from ..config.constants import (
     REPOSITORY_URL,
     SUPPORTED_MODELS,
     model_display_name,
+    normalise_model_preference,
+    normalise_reasoning_effort,
 )
 from ..config.settings import AppSettings, normalise_appearance
 from ..database.database import Database
@@ -254,14 +260,28 @@ class SettingsDialog(QDialog):
 
         engine_form = QFormLayout()
         self.model = QComboBox()
-        self.model.addItems(list(SUPPORTED_MODELS))
-        self.model.setCurrentText(settings.model)
+        for model_id in SUPPORTED_MODELS:
+            self.model.addItem(model_display_name(model_id), model_id)
+        self.model.setCurrentIndex(self.model.findData(normalise_model_preference(settings.model)))
         self.reasoning = QComboBox()
-        self.reasoning.addItems(["low", "medium", "high"])
-        self.reasoning.setCurrentText(settings.reasoning_effort)
+        for effort in SUPPORTED_REASONING_EFFORTS:
+            self.reasoning.addItem(REASONING_EFFORT_DISPLAY_NAMES[effort], effort)
+        self.reasoning.setCurrentIndex(
+            self.reasoning.findData(normalise_reasoning_effort(settings.reasoning_effort))
+        )
         engine_form.addRow("Model", self.model)
         engine_form.addRow("Reasoning", self.reasoning)
         api_layout.addLayout(engine_form)
+        model_help = QLabel(
+            "Model roles: "
+            + "  •  ".join(
+                f"{model_display_name(model_id)} — {MODEL_DESCRIPTIONS[model_id]}"
+                for model_id in SUPPORTED_MODELS
+            )
+        )
+        model_help.setObjectName("modelRoleHint")
+        model_help.setWordWrap(True)
+        api_layout.addWidget(model_help)
 
         status_heading = QLabel("API STATUS")
         status_heading.setObjectName("formHeading")
@@ -461,9 +481,12 @@ class SettingsDialog(QDialog):
             )
             return
         try:
-            service = OpenAIService(api_key, self.model.currentText(), self.reasoning.currentText())
+            model_id = self.model.currentData()
+            service = OpenAIService(api_key, model_id, self.reasoning.currentData())
         except Exception as exc:
-            self._show_connection_result(connection_result_for_exception(exc, self.model.currentText()))
+            self._show_connection_result(
+                connection_result_for_exception(exc, self.model.currentData() or DEFAULT_MODEL)
+            )
             return
 
         self._set_connection_testing(True)
@@ -551,8 +574,8 @@ class SettingsDialog(QDialog):
         elif entered_key:
             self.settings_service.save_api_key(entered_key)
 
-        self.settings.model = self.model.currentText()
-        self.settings.reasoning_effort = self.reasoning.currentText()
+        self.settings.model = self.model.currentData() or DEFAULT_MODEL
+        self.settings.reasoning_effort = self.reasoning.currentData() or DEFAULT_REASONING_EFFORT
         self.settings.appearance = self.appearance_switch.appearance
         self.settings.mock_mode = self.mock_mode.isChecked()
         self.settings.api_key_source = selected_source

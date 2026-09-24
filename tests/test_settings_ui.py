@@ -3,13 +3,25 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PySide6.QtCore import QElapsedTimer
 from PySide6.QtGui import QIcon
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.openai_service import MockOpenAIService, OpenAIService
 from src.cutdata_ai.services.settings_service import SecretStore, SettingsService
-from src.cutdata_ai.config.constants import APP_VERSION, COMPANY_NAME, ICON_SVG_PATH, PRODUCT_TAGLINE, WINDOWS_ICON_PATH
+from src.cutdata_ai.config.constants import (
+    APP_VERSION,
+    COMPANY_NAME,
+    DEFAULT_MODEL,
+    ICON_SVG_PATH,
+    PRODUCT_TAGLINE,
+    REASONING_EFFORT_DISPLAY_NAMES,
+    SUPPORTED_MODELS,
+    SUPPORTED_REASONING_EFFORTS,
+    WINDOWS_ICON_PATH,
+)
 from src.cutdata_ai.services.normalization import normalize_request, request_hash
 from src.cutdata_ai.ui.dialogs import AboutDialog, ConnectionTestWorker, SettingsDialog
 from src.cutdata_ai.ui.main_window import MainWindow, apply_styles, normalise_window_state
@@ -57,6 +69,29 @@ def test_settings_dialog_blank_key_retains_saved_key_and_reports_both_sources(qa
         close_widget(dialog, qapp)
 
 
+def test_settings_dialog_model_and_reasoning_choices_show_friendly_labels(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / "model-choices.sqlite3")
+    dialog = SettingsDialog(database, SettingsService(database).load())
+
+    try:
+        assert [dialog.model.itemData(i) for i in range(dialog.model.count())] == list(SUPPORTED_MODELS)
+        assert [dialog.model.itemText(i) for i in range(dialog.model.count())] == [
+            "GPT-6 Luna", "GPT-6 Sol", "GPT-6 Astra"
+        ]
+        assert dialog.model.currentData() == DEFAULT_MODEL
+        assert [dialog.reasoning.itemData(i) for i in range(dialog.reasoning.count())] == list(
+            SUPPORTED_REASONING_EFFORTS
+        )
+        assert [dialog.reasoning.itemText(i) for i in range(dialog.reasoning.count())] == [
+            REASONING_EFFORT_DISPLAY_NAMES[value] for value in SUPPORTED_REASONING_EFFORTS
+        ]
+        assert dialog.reasoning.currentData() == "medium"
+        assert "Efficient for focused, high-volume work" in dialog.findChild(QLabel, "modelRoleHint").text()
+    finally:
+        close_widget(dialog, qapp)
+
+
 def test_settings_dialog_blocks_testing_typed_key_when_environment_source_is_selected(qapp, tmp_path, monkeypatch):
     fake_secret_store(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
@@ -90,6 +125,46 @@ def test_settings_dialog_candidate_uses_new_entered_saved_key_exception(qapp, tm
         assert dialog._candidate_api_key() == "new-saved-secret"
         dialog.api_key_source.setCurrentIndex(dialog.api_key_source.findData("environment"))
         assert dialog._candidate_api_key() == "environment-secret"
+    finally:
+        close_widget(dialog, qapp)
+
+
+def test_settings_connection_uses_selected_model_reasoning_and_key_source(qapp, tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / "connection-route.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source("saved")
+    dialog = SettingsDialog(database, service.load())
+    captured = {}
+
+    class FakeOpenAIService:
+        def __init__(self, api_key, model, reasoning_effort):
+            captured.update(api_key=api_key, model=model, reasoning_effort=reasoning_effort)
+            self.model = model
+
+        def test_connection(self):
+            from src.cutdata_ai.services.openai_service import ConnectionTestResult
+
+            return ConnectionTestResult(True, "success", "Connection successful")
+
+    monkeypatch.setattr("src.cutdata_ai.ui.dialogs.OpenAIService", FakeOpenAIService)
+    try:
+        dialog.model.setCurrentIndex(dialog.model.findData("gpt-6-astra"))
+        dialog.reasoning.setCurrentIndex(dialog.reasoning.findData("xhigh"))
+        dialog._test_connection()
+        timer = QElapsedTimer()
+        timer.start()
+        while dialog._connection_thread is not None and timer.elapsed() < 3000:
+            QTest.qWait(10)
+
+        assert captured == {
+            "api_key": "saved-secret",
+            "model": "gpt-6-astra",
+            "reasoning_effort": "xhigh",
+        }
+        assert dialog.connection_status.text().startswith("API VERIFIED")
     finally:
         close_widget(dialog, qapp)
 
@@ -237,6 +312,33 @@ def test_settings_reload_rebuilds_active_service_without_restart(qapp, tmp_path,
         close_widget(window, qapp)
 
 
+@pytest.mark.parametrize(
+    ("model", "status"),
+    [
+        ("gpt-6-luna", "LIVE AI · LUNA · SAVED KEY"),
+        ("gpt-6-sol", "LIVE AI · SOL · SAVED KEY"),
+        ("gpt-6-astra", "LIVE AI · ASTRA · SAVED KEY"),
+    ],
+)
+def test_status_badge_names_every_current_model(model, status, qapp, tmp_path, monkeypatch):
+    fake_secret_store(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / f"status-{model}.sqlite3")
+    service = SettingsService(database)
+    service.save_api_key("saved-secret")
+    service.set_api_key_source("saved")
+    database.set_setting("mock_mode", "0")
+    window = MainWindow(database)
+
+    try:
+        window.settings.model = model
+        window._api_error = False
+        window._update_status()
+        assert window.status_badge.text() == status
+    finally:
+        close_widget(window, qapp)
+
+
 def test_calculation_service_uses_the_same_selected_key_source(qapp, tmp_path, monkeypatch):
     fake_secret_store(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "environment-secret")
@@ -265,7 +367,7 @@ def test_calculation_service_uses_the_same_selected_key_source(qapp, tmp_path, m
 
 def test_connection_worker_surfaces_result_without_touching_ui_thread():
     class FakeService:
-        model = "gpt-5.6-luna"
+        model = "gpt-6-luna"
 
         def test_connection(self):
             from src.cutdata_ai.services.openai_service import ConnectionTestResult
@@ -296,7 +398,7 @@ def test_calculator_state_persists_global_and_family_values_without_changing_req
         first.pages["end_mill"].fields["diameter_mm"].setValue(12.0)
         first.pages["end_mill"].fields["setup_rigidity"].setCurrentText("Rigid")
         first.pages["end_mill"].fields["toolholder_type"].setCurrentText("Shrink fit")
-        first.settings.model = "gpt-5.6-terra"
+        first.settings.model = "gpt-6-sol"
         first.settings.reasoning_effort = "high"
         first.settings.mock_mode = True
         first._save_calculator_state()
@@ -316,7 +418,7 @@ def test_calculator_state_persists_global_and_family_values_without_changing_req
         assert second.pages["end_mill"].fields["diameter_mm"].value() == 12.0
         assert second.pages["end_mill"].fields["setup_rigidity"].currentText() == "Rigid"
         assert second.pages["end_mill"].fields["toolholder_type"].currentText() == "Shrink fit"
-        assert second.settings.model == "gpt-5.6-terra"
+        assert second.settings.model == "gpt-6-sol"
         assert second.settings.reasoning_effort == "high"
         assert second.settings.mock_mode is True
         assert request_hash(normalize_request(second._collect_request())) == saved_hash
@@ -333,6 +435,7 @@ def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_p
     try:
         text = dialog.details.text()
         assert "PPT" in text
+        assert "Default engine: GPT-6 Luna" in text
         assert "CutData AI" in dialog.windowTitle()
         assert COMPANY_NAME in text
         assert dialog.findChild(QLabel, "dialogIdentityVersion").text() == f"Version {APP_VERSION}"

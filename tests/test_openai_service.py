@@ -25,12 +25,12 @@ class FakeClient:
 
 def test_responses_api_uses_strict_json_schema_and_reasoning():
     client = FakeClient()
-    service = OpenAIService("test-key", "gpt-5.6-luna", "medium", client=client)
+    service = OpenAIService("test-key", "gpt-6-luna", "medium", client=client)
     request = MachiningRequest("Test machine", "Mild Steel", "Drill", "Drilling", {"diameter_mm": 10})
     machine = MachineProfile("Test machine", 10000, 5000)
     response = service.calculate(request, machine)
     assert response.payload["rpm"] == 1000
-    assert client.responses.kwargs["model"] == "gpt-5.6-luna"
+    assert client.responses.kwargs["model"] == "gpt-6-luna"
     assert client.responses.kwargs["reasoning"] == {"effort": "medium"}
     format_spec = client.responses.kwargs["text"]["format"]
     assert format_spec["type"] == "json_schema"
@@ -50,7 +50,15 @@ def test_responses_api_uses_strict_json_schema_and_reasoning():
     assert "drilling-family" not in instructions
 
 
-def test_connection_test_retrieves_selected_model_without_creating_response():
+@pytest.mark.parametrize(
+    ("model", "friendly_name"),
+    [
+        ("gpt-6-luna", "GPT-6 Luna"),
+        ("gpt-6-sol", "GPT-6 Sol"),
+        ("gpt-6-astra", "GPT-6 Astra"),
+    ],
+)
+def test_connection_test_retrieves_selected_model_without_creating_response(model, friendly_name):
     class FakeModels:
         def __init__(self):
             self.requested = None
@@ -65,21 +73,21 @@ def test_connection_test_retrieves_selected_model_without_creating_response():
             self.responses = FakeResponses()
 
     client = ConnectionClient()
-    result = OpenAIService("test-key", "gpt-5.6-luna", client=client).test_connection()
+    result = OpenAIService("test-key", model, client=client).test_connection()
 
     assert result.success is True
     assert result.category == "success"
-    assert "GPT-5.6 Luna" in result.message
-    assert client.models.requested == "gpt-5.6-luna"
+    assert friendly_name in result.message
+    assert client.models.requested == model
     assert client.responses.kwargs is None
 
 
 def test_connection_test_fallback_is_a_minimal_non_machining_request():
     client = FakeClient()
-    result = OpenAIService("test-key", "gpt-5.6-luna", client=client).test_connection()
+    result = OpenAIService("test-key", "gpt-6-luna", client=client).test_connection()
 
     assert result.success is True
-    assert client.responses.kwargs["model"] == "gpt-5.6-luna"
+    assert client.responses.kwargs["model"] == "gpt-6-luna"
     assert client.responses.kwargs["input"] == "OK"
     assert client.responses.kwargs["max_output_tokens"] == 1
 
@@ -95,7 +103,7 @@ def test_connection_authentication_failure_is_clean():
     class ConnectionClient:
         models = FailingModels()
 
-    result = OpenAIService("test-key", "gpt-5.6-luna", client=ConnectionClient()).test_connection()
+    result = OpenAIService("test-key", "gpt-6-luna", client=ConnectionClient()).test_connection()
 
     assert result.success is False
     assert result.category == "authentication"
@@ -105,7 +113,7 @@ def test_connection_authentication_failure_is_clean():
 
 @pytest.mark.parametrize("status,category,heading", [
     (400, "request_rejected", "Request rejected"),
-    (403, "permission", "Permission denied"),
+    (403, "permission", "Model access denied"),
     (404, "model_unavailable", "Model unavailable"),
     (429, "rate_limit", "Rate limit / quota"),
 ])
@@ -113,16 +121,18 @@ def test_connection_http_failures_are_classified_without_secret_details(status, 
     class HttpFailure(Exception):
         status_code = status
 
-    result = connection_result_for_exception(HttpFailure("secret-value"), "gpt-5.6-luna")
+    result = connection_result_for_exception(HttpFailure("secret-value"), "gpt-6-astra")
 
     assert result.category == category
     assert result.message.startswith(heading)
     assert "secret-value" not in result.message
+    if status in {403, 404}:
+        assert "GPT-6 Astra" in result.message
     assert f"HTTP {status}" in result.technical_detail
 
 
 def test_connection_timeout_is_classified_as_network_without_exception_text():
-    result = connection_result_for_exception(TimeoutError("secret-value"), "gpt-5.6-luna")
+    result = connection_result_for_exception(TimeoutError("secret-value"), "gpt-6-luna")
 
     assert result.category == "network"
     assert result.message == "Network error\nUnable to reach OpenAI."
@@ -132,9 +142,22 @@ def test_connection_timeout_is_classified_as_network_without_exception_text():
 def test_connection_test_does_not_write_to_machining_cache(tmp_path):
     database = Database(tmp_path / "connection.sqlite3")
     client = FakeClient()
-    result = OpenAIService("test-key", "gpt-5.6-luna", client=client).test_connection()
+    result = OpenAIService("test-key", "gpt-6-luna", client=client).test_connection()
 
     assert result.success is True
     assert database.recent() == []
     with database.connect() as connection:
         assert connection.execute("SELECT COUNT(*) FROM cache_records").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+@pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"])
+def test_supported_reasoning_efforts_reach_the_responses_api(model, effort):
+    client = FakeClient()
+    request = MachiningRequest("Test machine", "Mild Steel", "Drill", "Drilling", {"diameter_mm": 10})
+    machine = MachineProfile("Test machine", 10000, 5000)
+
+    OpenAIService("test-key", model, effort, client=client).calculate(request, machine)
+
+    assert client.responses.kwargs["model"] == model
+    assert client.responses.kwargs["reasoning"] == {"effort": effort}

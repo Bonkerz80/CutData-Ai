@@ -13,7 +13,7 @@ from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import StructuredResponseError, result_from_dict, result_from_json, validate_drilling_peck
 from ..prompts.machining import build_user_prompt
-from .normalization import normalize_request, request_hash
+from .normalization import model_cache_identity, normalize_request, request_hash
 from .openai_service import ServiceResponse
 
 
@@ -299,12 +299,15 @@ class CalculationService:
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> CalculationOutcome:
         request = replace(request, parameters=active_parameters(request.tool_type, request.operation, request.parameters))
         normalized = normalize_request(request)
-        cache_key = request_hash(normalized)
+        request_key = request_hash(normalized)
+        selected_model = str(getattr(self.ai_service, "model", "") or "")
+        cache_key = model_cache_identity(normalized, selected_model)
         self.last_failure_context = {
             "normalized_request": normalized,
-            "request_hash": cache_key,
+            "request_hash": request_key,
+            "cache_identity": cache_key,
             "source": "mock" if getattr(self.ai_service, "is_mock", False) else "ai",
-            "model": str(getattr(self.ai_service, "model", "") or ""),
+            "model": selected_model,
             "prompt": build_user_prompt(request, machine),
             "raw_response": "",
             "validated_response": "",
@@ -316,7 +319,9 @@ class CalculationService:
         if errors:
             raise CalculationInputError(" ".join(errors))
 
-        preferred = self.database.get_preferred_result(cache_key)
+        # Workshop preferences intentionally follow only the exact machining
+        # request and continue to apply when the selected model changes.
+        preferred = self.database.get_preferred_result(request_key)
         if preferred:
             self.last_failure_context.update(
                 {
@@ -332,7 +337,7 @@ class CalculationService:
             return CalculationOutcome(
                 result=validated,
                 normalized_request=normalized,
-                request_hash=cache_key,
+                request_hash=request_key,
                 source="workshop",
                 cache_hit=True,
                 model="local workshop setting",
@@ -342,7 +347,9 @@ class CalculationService:
                 validation_corrections=corrections,
             )
 
-        cached = self.database.get_cache_record(cache_key)
+        cached = None
+        if not getattr(self.ai_service, "is_mock", False):
+            cached = self.database.get_cache_record(cache_key, model=selected_model)
         if cached:
             try:
                 self.last_failure_context.update(
@@ -364,7 +371,7 @@ class CalculationService:
                 return CalculationOutcome(
                     result=validated,
                     normalized_request=normalized,
-                    request_hash=cache_key,
+                    request_hash=request_key,
                     source="cache",
                     cache_hit=True,
                     model=cached["model"],
@@ -393,8 +400,10 @@ class CalculationService:
         validated_json = json.dumps(validated.to_dict(), ensure_ascii=False, sort_keys=True)
 
         if not service_response.is_mock:
+            actual_cache_key = model_cache_identity(normalized, service_response.model)
+            self.last_failure_context["cache_identity"] = actual_cache_key
             self.database.put_cache_record(
-                request_hash=cache_key,
+                request_hash=actual_cache_key,
                 normalized_request=normalized,
                 returned_data=service_response.payload,
                 validated_data=validated.to_dict(),
@@ -402,12 +411,14 @@ class CalculationService:
                 response_id=service_response.response_id,
                 usage=service_response.usage or {},
             )
-            self.database.add_recent(cache_key, normalized, validated.to_dict(), "ai")
+            self.database.add_recent(
+                request_key, normalized, validated.to_dict(), "ai", model=service_response.model
+            )
 
         return CalculationOutcome(
             result=validated,
             normalized_request=normalized,
-            request_hash=cache_key,
+            request_hash=request_key,
             source="mock" if service_response.is_mock else "ai",
             cache_hit=False,
             model=service_response.model,

@@ -9,6 +9,7 @@ from typing import Any
 
 from ..models.domain import MachiningRequest
 from ..config.operations import active_parameters
+from ..config.constants import PROMPT_VERSION, SCHEMA_VERSION
 
 
 def _normalise_value(value: Any) -> Any:
@@ -45,3 +46,24 @@ def canonical_json(value: dict[str, Any]) -> str:
 
 def request_hash(normalized_request: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(normalized_request).encode("utf-8")).hexdigest()
+
+
+def model_cache_identity(
+    normalized_request: dict[str, Any],
+    model: str,
+    prompt_version: str = PROMPT_VERSION,
+    schema_version: str = SCHEMA_VERSION,
+) -> str:
+    """Identify production cache entries by request, model, and contract version.
+
+    Keep ``request_hash`` model-independent: workshop preferences and recent
+    history use it to identify the exact machining request itself.
+    """
+
+    identity = {
+        "machining_request": normalized_request,
+        "model": str(model),
+        "prompt_version": str(prompt_version),
+        "schema_version": str(schema_version),
+    }
+    return hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()

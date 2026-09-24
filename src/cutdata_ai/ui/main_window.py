@@ -41,11 +41,12 @@ from ..config.constants import (
     PRODUCT_TAGLINE,
     PUBLISHER_NAME,
     PPT_HORIZONTAL_LOGO_PATH,
-    SUPPORTED_MODELS,
     TOOL_TYPES,
     WINDOWS_ICON_PATH,
     compatible_tool_type,
     model_display_name,
+    normalise_model_preference,
+    normalise_reasoning_effort,
     tool_family,
 )
 from ..config.operations import (
@@ -641,11 +642,11 @@ class MainWindow(QMainWindow):
             global_state = {}
 
         model = global_state.get("model")
-        if isinstance(model, str) and model in SUPPORTED_MODELS:
-            self.settings.model = model
+        if isinstance(model, str):
+            self.settings.model = normalise_model_preference(model)
         reasoning_effort = global_state.get("reasoning_effort")
-        if isinstance(reasoning_effort, str) and reasoning_effort in {"low", "medium", "high"}:
-            self.settings.reasoning_effort = reasoning_effort
+        if isinstance(reasoning_effort, str):
+            self.settings.reasoning_effort = normalise_reasoning_effort(reasoning_effort)
         mock_mode = global_state.get("mock_mode")
         if isinstance(mock_mode, bool):
             self.settings.mock_mode = mock_mode
@@ -877,7 +878,7 @@ class MainWindow(QMainWindow):
                 normalized = json.loads(row["normalized_request_json"])
             except json.JSONDecodeError:
                 continue
-            label = recent_item_text(normalized)
+            label = recent_item_text(normalized, row.get("model", ""))
             item = QListWidgetItem(label)
             item.setSizeHint(QSize(0, 47 if "\n" in label else 31))
             item.setData(Qt.UserRole, row)
@@ -913,9 +914,9 @@ class MainWindow(QMainWindow):
             result=result,
             normalized_request=normalized,
             request_hash=row["request_hash"],
-            source="cache",
+            source=row.get("source") or "cache",
             cache_hit=True,
-            model="saved recent calculation",
+            model=row.get("model") or "Model not recorded",
             validated_response=json.dumps(result.to_dict(), indent=2),
         )
         self._show_result(outcome)
@@ -1163,13 +1164,17 @@ class MainWindow(QMainWindow):
         self.notes.setPlaceholderText("No machining notes or warnings were returned.")
 
         if outcome.source == "mock":
-            banner = "DEVELOPMENT MOCK RESULT — not cached or suitable as production data"
+            model_name = model_display_name(outcome.model)
+            banner = (
+                f"DEVELOPMENT MOCK RESULT · {model_name} selected — "
+                "not cached or suitable as production data"
+            )
         elif outcome.source == "workshop":
             banner = "SAVED WORKSHOP SETTING — local preference takes priority"
         elif outcome.source == "cache":
             banner = "Cached result — no API request was made"
         else:
-            banner = f"AI result from {outcome.model}"
+            banner = f"AI result from {model_display_name(outcome.model)}"
         self.result_banner.setObjectName("resultBanner")
         self.result_banner.setText(banner + (" — " + legacy_warning if legacy_warning else ""))
         self.result_banner.setVisible(True)
@@ -1367,7 +1372,7 @@ class MainWindow(QMainWindow):
             API_KEY_SOURCE_ENVIRONMENT: "ENV KEY",
             API_KEY_SOURCE_SAVED: "SAVED KEY",
         }.get(source, "")
-        compact_model = model_display_name(self.settings.model).replace("GPT-5.6 ", "").upper()
+        compact_model = model_display_name(self.settings.model).removeprefix("GPT-6 ").upper()
         if self.settings.mock_mode:
             text = "MOCK MODE"
             self.status_badge.setObjectName("mockBadge")

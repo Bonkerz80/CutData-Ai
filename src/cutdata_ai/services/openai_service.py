@@ -52,12 +52,16 @@ def connection_result_for_exception(exc: Exception, model: str) -> ConnectionTes
         message = "Authentication failed\nCheck your OpenAI API key."
     elif status_code == 403 or any(token in name for token in ("permission", "forbidden")):
         category = "permission"
-        message = "Permission denied\nThe selected API key cannot access this request or model."
+        message = (
+            "Model access denied\n"
+            f"{model_display_name(model)} is not available to this API project. "
+            "Check model access and API key permissions."
+        )
     elif status_code == 404 or any(token in name for token in ("notfound", "modelnotfound")):
         category = "model_unavailable"
         message = (
             "Model unavailable\n"
-            f"The API key works, but {model_display_name(model)} is not available to this account."
+            f"{model_display_name(model)} is not available to this API project."
         )
     elif status_code == 429 or any(token in name for token in ("ratelimit", "rate_limit", "quota")):
         category = "rate_limit"

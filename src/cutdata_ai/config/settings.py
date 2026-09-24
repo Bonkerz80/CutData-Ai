@@ -6,7 +6,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import DEFAULT_MODEL, DEFAULT_REASONING_EFFORT
+from .constants import (
+    DEFAULT_MODEL,
+    DEFAULT_REASONING_EFFORT,
+    normalise_model_preference,
+    normalise_reasoning_effort,
+)
 
 
 APPEARANCE_LIGHT = "light"
@@ -18,6 +23,15 @@ def normalise_appearance(value: object) -> str:
     """Return a supported appearance, defaulting safely to Light."""
 
     return APPEARANCE_DARK if str(value or "").strip().casefold() == APPEARANCE_DARK else APPEARANCE_LIGHT
+
+
+def normalise_settings(settings: "AppSettings") -> "AppSettings":
+    """Apply safe model and reasoning defaults to one settings object."""
+
+    settings.model = normalise_model_preference(settings.model)
+    settings.reasoning_effort = normalise_reasoning_effort(settings.reasoning_effort)
+    settings.appearance = normalise_appearance(settings.appearance)
+    return settings
 
 
 def default_data_dir() -> Path:

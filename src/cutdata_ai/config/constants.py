@@ -30,23 +30,51 @@ from .branding import (
 )
 
 
-APP_VERSION = "0.1.12"
+APP_VERSION = "0.1.13"
 PROMPT_VERSION = "2026-09-07.3"
 SCHEMA_VERSION = "2"
-DEFAULT_MODEL = "gpt-5.6-luna"
+DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_REASONING_EFFORT = "medium"
 
 MODEL_DISPLAY_NAMES = {
+    "gpt-6-luna": "GPT-6 Luna",
+    "gpt-6-sol": "GPT-6 Sol",
+    "gpt-6-astra": "GPT-6 Astra",
+}
+
+# Used only when rendering historical records created by earlier releases.
+HISTORICAL_MODEL_DISPLAY_NAMES = {
     "gpt-5.6-luna": "GPT-5.6 Luna",
     "gpt-5.6-terra": "GPT-5.6 Terra",
     "gpt-5.6-sol": "GPT-5.6 Sol",
 }
 
 SUPPORTED_MODELS = (
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
-    "gpt-5.6-sol",
+    "gpt-6-luna",
+    "gpt-6-sol",
+    "gpt-6-astra",
 )
+
+MODEL_DESCRIPTIONS = {
+    "gpt-6-luna": "Efficient for focused, high-volume work. Default engine.",
+    "gpt-6-sol": "Higher-capability reasoning for demanding work.",
+    "gpt-6-astra": "Highest-capability model for the hardest work.",
+}
+
+LEGACY_MODEL_MIGRATIONS = {
+    "gpt-5.6-luna": "gpt-6-luna",
+    "gpt-5.6-terra": "gpt-6-sol",
+    "gpt-5.6-sol": "gpt-6-astra",
+}
+
+SUPPORTED_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+REASONING_EFFORT_DISPLAY_NAMES = {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "xhigh": "Extra High",
+    "max": "Maximum",
+}
 
 MACHINE_PROFILES = (
     {
@@ -207,4 +235,20 @@ def compatible_tool_type(tool_type: str) -> str | None:
 def model_display_name(model: str) -> str:
     """Return a workshop-friendly model name without changing the API value."""
 
-    return MODEL_DISPLAY_NAMES.get(model, model)
+    return MODEL_DISPLAY_NAMES.get(model, HISTORICAL_MODEL_DISPLAY_NAMES.get(model, model))
+
+
+def normalise_model_preference(model: object) -> str:
+    """Migrate supported saved choices and safely default invalid preferences."""
+
+    value = str(model or "").strip()
+    if value in MODEL_DISPLAY_NAMES:
+        return value
+    return LEGACY_MODEL_MIGRATIONS.get(value, DEFAULT_MODEL)
+
+
+def normalise_reasoning_effort(value: object) -> str:
+    """Keep valid stored reasoning values and default unknown values safely."""
+
+    effort = str(value or "").strip().casefold()
+    return effort if effort in SUPPORTED_REASONING_EFFORTS else DEFAULT_REASONING_EFFORT

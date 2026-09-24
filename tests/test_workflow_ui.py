@@ -54,14 +54,14 @@ def normalized_request(tool_type, parameters, *, material="Mild Steel", operatio
     }
 
 
-def outcome(normalized, result, *, source="ai"):
+def outcome(normalized, result, *, source="ai", model="test-model"):
     return CalculationOutcome(
         result=result,
         normalized_request=normalized,
         request_hash="exact-test-hash",
         source=source,
         cache_hit=source == "cache",
-        model="test-model",
+        model=model,
         validated_response=json.dumps(result.to_dict()),
     )
 
@@ -152,6 +152,8 @@ def test_recent_summary_is_family_aware_and_has_no_timestamp(
     assert title == expected_title
     assert detail == expected_detail
     assert recent_item_text(normalized) == f"{expected_title}\n{expected_detail}"
+    assert recent_item_text(normalized, "gpt-6-sol").endswith("GPT-6 Sol")
+    assert recent_item_text(normalized, "gpt-5.6-sol").endswith("GPT-5.6 Sol")
     assert "2026-" not in recent_item_text(normalized)
     assert ":" not in recent_item_text(normalized)
 
@@ -215,6 +217,23 @@ def test_drill_result_populates_secondary_derived_notes_and_read_only_values(win
     assert "Use flood coolant." in window.notes.toPlainText()
     assert "Verify chip evacuation" in window.notes.toPlainText()
     assert window.notes.toPlainText().count("Use flood coolant.") == 1
+
+
+def test_mock_result_names_default_engine_and_stays_visibly_nonproduction(window, qapp):
+    normalized = normalized_request("Drill", {"diameter_mm": 10, "hole_depth_mm": 20})
+    window._show_result(
+        outcome(
+            normalized,
+            MachiningResult(rpm=800, feed_mm_min=80),
+            source="mock",
+            model="gpt-6-luna",
+        )
+    )
+
+    assert "DEVELOPMENT MOCK RESULT" in window.result_banner.text()
+    assert "GPT-6 Luna selected" in window.result_banner.text()
+    assert "not cached" in window.result_banner.text()
+    assert "suitable as production data" in window.result_banner.text()
 
 
 def test_milling_tap_reamer_and_indexable_results_show_applicable_fields(window, qapp):
@@ -299,7 +318,7 @@ def test_recent_list_uses_details_and_reopens_exact_record(window, qapp):
         operation="Drilling",
     )
     result = MachiningResult(rpm=2450, feed_mm_min=365, feed_per_rev_mm=0.149, coolant="Flood coolant", confidence="high")
-    window.database.add_recent("exact-drill-hash", normalized, result.to_dict(), "ai")
+    window.database.add_recent("exact-drill-hash", normalized, result.to_dict(), "ai", model="gpt-6-astra")
     window._load_recent()
     qapp.processEvents()
 
@@ -307,6 +326,7 @@ def test_recent_list_uses_details_and_reopens_exact_record(window, qapp):
     item = window.recent_list.item(0)
     assert "Ø22 HSS Drill · Mild Steel" in item.text()
     assert "160 mm deep · Ø8 pilot · Flood" in item.text()
+    assert "GPT-6 Astra" in item.text()
     row = item.data(Qt.UserRole)
     assert row["created_at"][:16].replace("T", " ") not in item.text()
 
@@ -317,6 +337,8 @@ def test_recent_list_uses_details_and_reopens_exact_record(window, qapp):
     assert window.pages["drill"].fields["diameter_mm"].value() == 22
     assert window._current_outcome is not None
     assert window._current_outcome.request_hash == "exact-drill-hash"
+    assert window._current_outcome.model == "gpt-6-astra"
+    assert window._current_outcome.source == "ai"
     assert window.result_fields["rpm"].text() == "2,450 RPM"
 
 
@@ -326,9 +348,12 @@ def test_legacy_recent_record_reopens_without_reintroducing_removed_choice(windo
         {"cutter_diameter_mm": 25, "insert_count": 2, "operation": "Profiling", "axial_doc_mm": 2, "radial_doc_mm": 3},
     )
     result = MachiningResult(rpm=1000, feed_mm_min=200, axial_doc_mm=2, radial_doc_mm=3, confidence="medium")
-    window.database.add_recent("legacy-slot-hash", normalized, result.to_dict(), "cache")
+    window.database.add_recent(
+        "legacy-slot-hash", normalized, result.to_dict(), "cache", model="gpt-5.6-sol"
+    )
     window._load_recent()
     item = window.recent_list.item(0)
+    assert "GPT-5.6 Sol" in item.text()
     window._load_recent_item(item)
     qapp.processEvents()
 
@@ -336,6 +361,8 @@ def test_legacy_recent_record_reopens_without_reintroducing_removed_choice(windo
     assert "Slot Cutter" not in [window.tool_combo.itemText(i) for i in range(window.tool_combo.count())]
     assert window._current_outcome is not None
     assert window._current_outcome.request_hash == "legacy-slot-hash"
+    assert window._current_outcome.model == "gpt-5.6-sol"
+    assert window._current_outcome.source == "cache"
 
 
 def test_saved_tools_and_workshop_editor_are_dormant(window, qapp):

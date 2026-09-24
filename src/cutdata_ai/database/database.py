@@ -72,7 +72,8 @@ class Database:
                     normalized_request_json TEXT NOT NULL,
                     result_json TEXT NOT NULL,
                     source TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS saved_tools (
@@ -143,17 +144,34 @@ class Database:
                   AND rigidity = 'medium-high'
                 """
             )
+            recent_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(recent_calculations)")
+            }
+            if "model" not in recent_columns:
+                # Existing history stays untouched; blank means its model was
+                # not recorded by the older schema.
+                connection.execute(
+                    "ALTER TABLE recent_calculations ADD COLUMN model TEXT NOT NULL DEFAULT ''"
+                )
 
     # Cache ---------------------------------------------------------------
-    def get_cache_record(self, request_hash: str, prompt_version: str = PROMPT_VERSION, schema_version: str = SCHEMA_VERSION):
+    def get_cache_record(
+        self,
+        request_hash: str,
+        prompt_version: str = PROMPT_VERSION,
+        schema_version: str = SCHEMA_VERSION,
+        model: str | None = None,
+    ):
         with self.connect() as connection:
-            row = connection.execute(
-                """
+            query = """
                 SELECT * FROM cache_records
                 WHERE request_hash = ? AND prompt_version = ? AND schema_version = ?
-                """,
-                (request_hash, prompt_version, schema_version),
-            ).fetchone()
+            """
+            parameters: tuple[str, ...] = (request_hash, prompt_version, schema_version)
+            if model is not None:
+                query += " AND model = ?"
+                parameters += (model,)
+            row = connection.execute(query, parameters).fetchone()
             if row is None:
                 return None
             connection.execute(
@@ -219,13 +237,14 @@ class Database:
         normalized_request: dict[str, Any],
         result: dict[str, Any],
         source: str,
+        model: str = "",
     ) -> None:
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO recent_calculations
-                (request_hash, normalized_request_json, result_json, source, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                (request_hash, normalized_request_json, result_json, source, created_at, model)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request_hash,
@@ -233,6 +252,7 @@ class Database:
                     json.dumps(result, ensure_ascii=False, sort_keys=True),
                     source,
                     utc_now(),
+                    model,
                 ),
             )
             connection.execute(

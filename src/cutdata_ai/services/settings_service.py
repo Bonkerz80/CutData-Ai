@@ -10,8 +10,11 @@ import json
 import os
 from dataclasses import asdict, dataclass
 
-from ..config.constants import DEFAULT_MODEL, DEFAULT_REASONING_EFFORT
-from ..config.settings import AppSettings, normalise_appearance
+from ..config.constants import (
+    normalise_model_preference,
+    normalise_reasoning_effort,
+)
+from ..config.settings import AppSettings, normalise_appearance, normalise_settings
 from ..database.database import Database
 
 
@@ -99,6 +102,14 @@ class SettingsService:
     def load(self) -> AppSettings:
         stored_mock_mode = self.database.get_setting("mock_mode")
         api_key_source = self.get_active_api_key_source()
+        stored_model = self.database.get_setting("model")
+        model = normalise_model_preference(stored_model)
+        if stored_model is not None and stored_model != model:
+            self.database.set_setting("model", model)
+        stored_reasoning = self.database.get_setting("reasoning_effort")
+        reasoning_effort = normalise_reasoning_effort(stored_reasoning)
+        if stored_reasoning is not None and stored_reasoning != reasoning_effort:
+            self.database.set_setting("reasoning_effort", reasoning_effort)
         mock_default = api_key_source == API_KEY_SOURCE_NONE
         mock_mode = (
             self._as_bool(stored_mock_mode)
@@ -106,9 +117,8 @@ class SettingsService:
             else mock_default
         )
         return AppSettings(
-            model=self.database.get_setting("model", DEFAULT_MODEL) or DEFAULT_MODEL,
-            reasoning_effort=self.database.get_setting("reasoning_effort", DEFAULT_REASONING_EFFORT)
-            or DEFAULT_REASONING_EFFORT,
+            model=model,
+            reasoning_effort=reasoning_effort,
             appearance=normalise_appearance(self.database.get_setting("appearance", "light")),
             mock_mode=mock_mode,
             last_machine=self.database.get_setting("last_machine", "Generic CNC Mill") or "Generic CNC Mill",
@@ -119,7 +129,7 @@ class SettingsService:
         )
 
     def save(self, settings: AppSettings) -> None:
-        settings.appearance = normalise_appearance(settings.appearance)
+        normalise_settings(settings)
         values = asdict(settings)
         for key, value in values.items():
             if key == "api_key_source" and value not in {

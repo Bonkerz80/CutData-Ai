@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from ..config.constants import tool_family
+from ..config.constants import model_display_name, tool_family
 
 
 _ACRONYMS = {
@@ -291,8 +291,11 @@ def build_recent_summary(normalized_request: Mapping[str, Any]) -> tuple[str, st
     return _tool_title(request, parameters, family), _detail(request, parameters, family)
 
 
-def recent_item_text(normalized_request: Mapping[str, Any]) -> str:
-    """Return a QListWidget-friendly one- or two-line history label."""
+def recent_item_text(normalized_request: Mapping[str, Any], model: str = "") -> str:
+    """Return a compact history label, optionally identifying its generator."""
 
     title, detail = build_recent_summary(normalized_request)
+    display_model = model_display_name(model) if model else ""
+    if display_model:
+        detail = f"{detail} · {display_model}" if detail else display_model
     return f"{title}\n{detail}" if detail else title

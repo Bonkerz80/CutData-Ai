@@ -1,3 +1,5 @@
+import pytest
+
 from src.cutdata_ai.config.settings import AppSettings
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.settings_service import (
@@ -152,3 +154,49 @@ def test_json_settings_round_trip_and_malformed_fallback(tmp_path):
     assert service.load_json_setting("last_calculator_state") == payload
     service.database.set_setting("last_calculator_state", "{not-json")
     assert service.load_json_setting("last_calculator_state", {"safe": True}) == {"safe": True}
+
+
+@pytest.mark.parametrize(
+    ("legacy_model", "expected_model"),
+    [
+        ("gpt-5.6-luna", "gpt-6-luna"),
+        ("gpt-5.6-terra", "gpt-6-sol"),
+        ("gpt-5.6-sol", "gpt-6-astra"),
+    ],
+)
+def test_saved_model_preferences_migrate_by_capability_tier(tmp_path, legacy_model, expected_model):
+    database = Database(tmp_path / "model-migration.sqlite3")
+    database.set_setting("model", legacy_model)
+
+    loaded = SettingsService(database).load()
+
+    assert loaded.model == expected_model
+    assert database.get_setting("model") == expected_model
+
+
+def test_unknown_model_preference_falls_back_to_luna(tmp_path):
+    database = Database(tmp_path / "unknown-model.sqlite3")
+    database.set_setting("model", "unreleased-model-id")
+
+    loaded = SettingsService(database).load()
+
+    assert loaded.model == "gpt-6-luna"
+    assert database.get_setting("model") == "gpt-6-luna"
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high"])
+def test_existing_reasoning_preferences_are_preserved(tmp_path, effort):
+    database = Database(tmp_path / f"reasoning-{effort}.sqlite3")
+    database.set_setting("reasoning_effort", effort)
+
+    assert SettingsService(database).load().reasoning_effort == effort
+
+
+def test_unknown_reasoning_preference_falls_back_to_medium(tmp_path):
+    database = Database(tmp_path / "unknown-reasoning.sqlite3")
+    database.set_setting("reasoning_effort", "unreleased-effort")
+
+    loaded = SettingsService(database).load()
+
+    assert loaded.reasoning_effort == "medium"
+    assert database.get_setting("reasoning_effort") == "medium"
