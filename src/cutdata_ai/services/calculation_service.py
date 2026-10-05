@@ -427,10 +427,18 @@ def validate_and_correct_result(
 class CalculationService:
     """Cache-first orchestration shared by every tool family."""
 
-    def __init__(self, database: Database, ai_service: Any, progress_callback: Callable[[str], None] | None = None):
+    def __init__(
+        self,
+        database: Database,
+        ai_service: Any,
+        progress_callback: Callable[[str], None] | None = None,
+        independent_check: bool = True,
+    ):
         self.database = database
         self.ai_service = ai_service
         self.progress_callback = progress_callback
+        # False gives a quicker Guided result from the first AI call only.
+        self.independent_check = independent_check
         # The UI uses this read-only context when a response cannot become a
         # CalculationOutcome. It deliberately contains no API credentials.
         self.last_failure_context: dict[str, Any] = {}
@@ -512,9 +520,14 @@ class CalculationService:
                     }
                 )
                 cached_result = result_from_json(cached["validated_data_json"])
-                if guided and cached_result.verification_status == "check_incomplete":
-                    # Entries cached by earlier releases before the check
-                    # finished must not block a fresh, fully checked attempt.
+                cached_status = cached_result.verification_status
+                if guided and (
+                    cached_status == "check_incomplete"
+                    or (self.independent_check and cached_status not in {"cross_checked", "review_required"})
+                ):
+                    # An unchecked entry (a quick result, or one cached by an
+                    # earlier release before the check finished) must not
+                    # stand in for a fully checked calculation.
                     raise StructuredResponseError("Cached result has no completed independent check")
                 validated, corrections = validate_and_correct_result(cached_result, request, machine)
             except (StructuredResponseError, CalculationInputError):
@@ -565,7 +578,7 @@ class CalculationService:
         reviewer_response = None
         verification_error = ""
         verifier = getattr(self.ai_service, "verify", None)
-        if guided and not service_response.is_mock and callable(verifier):
+        if guided and self.independent_check and not service_response.is_mock and callable(verifier):
             self.last_failure_context["stage"] = "independent check"
             self._progress("Independently checking the recommendation")
             try:
@@ -589,15 +602,20 @@ class CalculationService:
         verification_usage: dict[str, Any] = {}
         if guided and not service_response.is_mock:
             if reviewer_response is None:
-                validated.verification_status = "check_incomplete"
-                detail = f" ({verification_error})" if verification_error else ""
-                validated.verification_summary = (
-                    "The independent check did not complete"
-                    + detail
-                    + "; treat this recommendation as unverified."
-                )
-                validated.warnings.append(validated.verification_summary)
-                validated.confidence = "low"
+                if self.independent_check:
+                    validated.verification_status = "check_incomplete"
+                    detail = f" ({verification_error})" if verification_error else ""
+                    validated.verification_summary = (
+                        "The independent check did not complete"
+                        + detail
+                        + "; treat this recommendation as unverified."
+                    )
+                    validated.warnings.append(validated.verification_summary)
+                    validated.confidence = "low"
+                else:
+                    validated.warnings.append(
+                        "Quick calculation: the independent AI check was not run."
+                    )
                 if primary_sources:
                     validated.research_status = "searched"
                 elif service_response.research_status in {"unavailable", "no_sources"}:

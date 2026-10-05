@@ -354,3 +354,50 @@ def test_legacy_cached_incomplete_check_is_ignored(tmp_path):
     outcome = CalculationService(database, service).calculate(request, MACHINE)
     assert service.calculate_calls == 1
     assert outcome.cache_hit is False
+
+
+def test_quick_guided_result_skips_the_check_and_checked_mode_reruns_it(tmp_path):
+    class Reviewer:
+        is_mock = False
+        model = "gpt-6-luna"
+        calculate_calls = 0
+        verify_calls = 0
+
+        def calculate(self, request, machine):
+            self.calculate_calls += 1
+            payload = dict(_result(1000, 78.5, 4), pass_plan=[{"stage": "Rough", "passes": 16}])
+            return ServiceResponse(payload, json.dumps(payload), "primary prompt", self.model)
+
+        def verify(self, *args, **kwargs):
+            self.verify_calls += 1
+            report = {
+                "status": "consistent",
+                "history_change_assessment": "not_applicable",
+                "history_change_reason": "No nearby history.",
+                "summary": "Consistent.",
+                "findings": [],
+            }
+            return VerificationResponse(report, json.dumps(report), "review prompt")
+
+    database = Database(tmp_path / "quick.sqlite3")
+    service = Reviewer()
+    quick = CalculationService(database, service, independent_check=False).calculate(_request(62), MACHINE)
+    assert service.verify_calls == 0
+    assert quick.result.verification_status == "not_run"
+    assert quick.result.confidence != "low"
+    assert any("Quick calculation" in warning for warning in quick.result.warnings)
+
+    # A repeat quick request is served from the cache.
+    again = CalculationService(database, service, independent_check=False).calculate(_request(62), MACHINE)
+    assert again.cache_hit is True and service.calculate_calls == 1
+
+    # Asking for the check never accepts the unchecked cached result.
+    checked = CalculationService(database, service).calculate(_request(62), MACHINE)
+    assert checked.cache_hit is False
+    assert service.verify_calls == 1
+    assert checked.result.verification_status == "cross_checked"
+
+    # A quick request can reuse the better, checked result.
+    reuse = CalculationService(database, service, independent_check=False).calculate(_request(62), MACHINE)
+    assert reuse.cache_hit is True
+    assert reuse.result.verification_status == "cross_checked"

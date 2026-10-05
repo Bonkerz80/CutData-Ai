@@ -36,9 +36,12 @@ Library**. Manufacturer claims not supported by returned source evidence are
 marked as AI-inferred, not manufacturer-confirmed. Imports never write to
 calculation history or the machining cache.
 
-AI Guided asks for the actual cutter and physical job: profile depth or plate
-thickness, stock allowance, entry access, finish, coolant, stickout, setup
-rigidity, and optional constraints. It intentionally does not require DOC,
+AI Guided asks for the actual cutter and the essentials of the physical job,
+such as profile depth or plate thickness, stock allowance, and finish. Job
+types are limited to those the selected tool can do. Coolant, cut priority,
+stickout, setup rigidity, entry access, and other optional facts live in a
+collapsed **Setup details** section; they keep their last values and are sent
+with every request. Optional constraints remain under Advanced Overrides. It intentionally does not require DOC,
 radial engagement, stepover, cutting speed, chipload, or an ENCY operation.
 The model selects an operation and strategy, entry method, a pass plan, and
 the machining values. Numeric maximum overrides are also enforced locally.
@@ -56,7 +59,9 @@ review does not justify the change, the result is marked **REVIEW REQUIRED**
 and confidence is lowered. Research links, compared history, and the reviewer
 prompt/response are available in the result notes and **Evidence** debug tab.
 If live search or the second check is unavailable, the app says so rather than
-presenting the result as fully checked. Guided live calculations can use two
+presenting the result as fully checked. Untick **Independent AI check** for a
+quicker result from the first request only; it is marked "quick result, not
+cross-checked", and is never reused when the check is ticked. Guided live calculations can use two
 AI requests plus web search; this is not a safety certification, and operators
 must confirm settings against the real tool, workholding, machine, and cut.
 
@@ -118,7 +123,7 @@ workshop preferences.
 
 ## Recent calculations
 
-Recent entries show the useful tool identity and operation details rather than timestamps. Double-click a recent calculation to reopen its exact inputs and result. Mock calculations are not persisted as production history.
+Recent calculations open from the **Recent…** button beside the workflow selector. Entries show the useful tool identity and operation details rather than timestamps. Double-click a recent calculation to reopen its exact inputs and result. Mock calculations are not persisted as production history.
 
 The legacy saved-tool table remains untouched; the normalized workshop library is stored separately.
 
@@ -132,7 +137,7 @@ Results separate three kinds of information:
 
 Normal results are read-only. Exact-query workshop preferences remain separate from AI recommendations and from the new qualitative observations.
 
-Primary cards, applicable secondary and derived rows, and machining notes are visible from startup. Selecting a different tool immediately selects its display layout and clears old values to `—`. Calculations populate those same read-only widgets. AI context appears only when supplied, below the stable calculator display.
+Primary cards are visible from startup; the pass plan and up to three key warnings appear with a result. Secondary and derived rows, the full machining notes, research sources, and AI context sit under **Details**, which is collapsed by default and remembers its last state. Selecting a different tool, in either workflow, immediately selects its display layout and clears old values to `—`. Calculations populate those same read-only widgets.
 
 ### Preserved 0.1.13 drilling behavior in Advanced / Manual
 
@@ -177,7 +182,7 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.2.4.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.2.5.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
 ### Previous-release baseline: 0.1.13
 

@@ -31,6 +31,12 @@ def window(qapp, tmp_path):
     qapp.processEvents()
 
 
+def _select_temporary(window, tool_type, diameter=10.0):
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData("temporary"))
+    window.temporary_tool_type.setCurrentText(tool_type)
+    window.temporary_diameter.setValue(diameter)
+
+
 def test_guided_is_default_and_25_tipped_builds_profile_request_without_doc(window):
     assert window.workflow_mode == "guided"
     library = ToolLibraryService(window.database)
@@ -82,13 +88,17 @@ def test_job_type_shows_only_relevant_inputs_and_preserves_switched_values(windo
     assert not window.stock_on_side.isVisible()
     window.hole_depth.setValue(20)
 
-    tool = next(item for item in ToolLibraryService(window.database).list_tools() if item["display_name"] == "25 Tipped")
-    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+    _select_temporary(window, "Drill")
+    assert window.guided_job_type.currentText() == "Drill hole"
     drilling = window._collect_request().parameters
     assert drilling["hole_depth_mm"] == 20
     assert "job_depth_mm" not in drilling
     assert "stock_on_side_mm" not in drilling
 
+    tool = next(item for item in ToolLibraryService(window.database).list_tools() if item["display_name"] == "25 Tipped")
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+    # An indexable end mill cannot drill, so the job falls back to milling.
+    assert window.guided_job_type.findText("Drill hole") == -1
     window.guided_job_type.setCurrentText("Profile / outside contour")
     qapp.processEvents()
     assert window.job_depth.isVisible()
@@ -110,10 +120,12 @@ def test_advanced_overrides_only_apply_when_enabled_and_relevant(window):
     assert profile["max_axial_doc_mm"] == 2
     assert profile["max_rpm"] == 1500
 
+    _select_temporary(window, "Drill")
     window.guided_job_type.setCurrentText("Drill hole")
     drilling = window._collect_request().parameters["constraints"]
     assert "max_axial_doc_mm" not in drilling
     assert drilling["max_rpm"] == 1500
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
     window.guided_job_type.setCurrentText("Profile / outside contour")
     assert window._collect_request().parameters["constraints"]["max_axial_doc_mm"] == 2
 
@@ -286,3 +298,53 @@ def test_pass_plan_limits_preserve_stage_chipload_and_name_the_real_limit():
     # The user's 20,000 RPM maximum was not the limit that applied.
     assert any("HAAS VF-2 maximum of 8000 RPM" in item for item in corrections)
     assert not any("requested maximum" in item for item in corrections)
+
+
+def test_job_types_follow_the_selected_tool_and_legacy_names_are_migrated(qapp, tmp_path):
+    from src.cutdata_ai.ui.main_window import GUIDED_JOB_TYPES, guided_job_types_for_tool
+
+    assert len(GUIDED_JOB_TYPES) == 11
+    assert guided_job_types_for_tool("") == GUIDED_JOB_TYPES
+    assert guided_job_types_for_tool("Reamer") == ("Ream hole", "Other / describe job")
+    assert "Drill hole" not in guided_job_types_for_tool("End Mill")
+    assert len(guided_job_types_for_tool("End Mill")) == 6
+
+    database = Database(tmp_path / "legacy-job.sqlite3")
+    database.set_setting("last_calculator_state", json.dumps({
+        "global": {"workflow_mode": "guided"},
+        "guided": {"job_type": "Steep wall / 3D wall finish", "independent_check": False},
+    }))
+    window = MainWindow(database)
+    try:
+        assert window.guided_job_type.currentText() == "3D surface / wall finish"
+        assert window.surface_type.currentText() == "Steep wall"
+        assert not window.independent_check.isChecked()
+        _select_temporary(window, "Tap")
+        items = [window.guided_job_type.itemText(i) for i in range(window.guided_job_type.count())]
+        assert items == ["Tap thread", "Other / describe job"]
+        assert window.guided_job_type.currentText() == "Tap thread"
+        # The placeholder result follows the selected tool.
+        assert not window.result_cards["tap_drill_mm"].isHidden()
+        assert window.result_cards["axial_doc_mm"].isHidden()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_setup_details_are_collapsed_but_still_sent(window, qapp):
+    window.show()
+    qapp.processEvents()
+    assert not window.guided_coolant.isVisible()
+    assert window.finish_requirement.isVisible()
+    window.guided_coolant.setCurrentText("Mist")
+    window.setup_stickout.setValue(60)
+    assert "Mist" in window.optional_toggle.text() and "stickout 60 mm" in window.optional_toggle.text()
+    tool = next(item for item in ToolLibraryService(window.database).list_tools() if item["display_name"] == "25 Tipped")
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+    parameters = window._collect_request().parameters
+    assert parameters["coolant_type"] == "Mist"
+    assert parameters["stickout_mm"] == 60
+    window.optional_toggle.setChecked(True)
+    qapp.processEvents()
+    assert window.guided_coolant.isVisible()

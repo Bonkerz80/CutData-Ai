@@ -32,6 +32,7 @@ def qapp():
 def window(qapp, tmp_path):
     value = MainWindow(Database(tmp_path / "workflow.sqlite3"))
     value.workflow_combo.setCurrentIndex(1)
+    value.details_button.setChecked(True)
     value.show()
     qapp.processEvents()
     yield value
@@ -425,7 +426,7 @@ def test_startup_restores_family_with_complete_placeholder_display(
 ):
     database = Database(tmp_path / "startup.sqlite3")
     # Exercise actual startup and persisted selection, before any calculation.
-    database.set_setting("last_calculator_state", json.dumps({"global": {"tool_type": tool_type, "workflow_mode": "manual"}}))
+    database.set_setting("last_calculator_state", json.dumps({"global": {"tool_type": tool_type, "workflow_mode": "manual", "result_details_open": True}}))
     window = MainWindow(database)
     window.show()
     qapp.processEvents()
@@ -636,3 +637,45 @@ def test_reamer_response_discards_peck_data_and_populates_debug(window, qapp):
     assert "G83 peck cycle" in window.debug_editors["raw"].toPlainText()
     assert '"recommended_cycle": null' in window.debug_editors["validated"].toPlainText()
     assert "continuous-feed reaming" in window.notes.toPlainText()
+
+
+def test_details_are_collapsed_by_default_and_key_warnings_are_limited(qapp, tmp_path):
+    window = MainWindow(Database(tmp_path / "details.sqlite3"))
+    window.show()
+    qapp.processEvents()
+    try:
+        assert not window.details_button.isChecked()
+        assert window.primary_group.isVisible()
+        assert not window.info_group.isVisible()
+        assert not window.notes_group.isVisible()
+        # A Guided profile job never shows drilling placeholders.
+        assert not window.result_cards["peck_mm"].isVisible()
+        assert window.result_cards["axial_doc_mm"].isVisible()
+
+        result = MachiningResult(
+            rpm=1000, feed_mm_min=200, feed_per_tooth_mm=0.1, axial_doc_mm=2, radial_doc_mm=3,
+            warnings=[
+                "Check clamp clearance.",
+                "RPM limited locally to the Generic CNC Mill maximum of 12000 RPM.",
+                "Verify chip evacuation.",
+                "Independent check requires operator review: speed is high.",
+                "Confirm stickout.",
+            ],
+        )
+        window._show_result(outcome(normalized_request("End Mill", {"diameter_mm": 10, "flute_count": 2}, operation="Roughing Waterline"), result))
+        qapp.processEvents()
+        lines = window.key_warnings.text().splitlines()
+        assert window.key_warnings.isVisible()
+        assert "Independent check requires operator review" in lines[0]
+        assert "limited locally" in lines[1]
+        assert lines[-1] == "+ 2 more under Details"
+        assert "Confirm stickout." in window.notes.toPlainText()
+
+        window.details_button.setChecked(True)
+        qapp.processEvents()
+        assert window.info_group.isVisible() and window.notes_group.isVisible()
+        assert not window.key_warnings.isVisible()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

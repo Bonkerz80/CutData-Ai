@@ -169,6 +169,45 @@ def _material_accepts_hardness(material: str) -> bool:
     )
 
 
+OTHER_JOB_TYPE = "Other / describe job"
+SURFACE_JOB_TYPE = "3D surface / wall finish"
+GUIDED_JOB_TYPES = (
+    "Profile / outside contour", "Pocket / cavity", "Slot", "Face / remove stock from top",
+    SURFACE_JOB_TYPE, "Drill hole", "Ream hole", "Tap thread", "Thread mill",
+    "Chamfer / countersink", OTHER_JOB_TYPE,
+)
+_MILLING_JOB_TYPES = GUIDED_JOB_TYPES[:5] + (OTHER_JOB_TYPE,)
+_JOB_TYPES_BY_TOOL = {
+    "drill": ("Drill hole", OTHER_JOB_TYPE),
+    "spot drill / centre drill": ("Chamfer / countersink", "Drill hole", OTHER_JOB_TYPE),
+    "countersink": ("Chamfer / countersink", OTHER_JOB_TYPE),
+    "chamfer mill": ("Chamfer / countersink", OTHER_JOB_TYPE),
+    "chamfer tool": ("Chamfer / countersink", OTHER_JOB_TYPE),
+    "reamer": ("Ream hole", OTHER_JOB_TYPE),
+    "tap": ("Tap thread", OTHER_JOB_TYPE),
+    "thread mill": ("Thread mill", OTHER_JOB_TYPE),
+    "face mill": ("Face / remove stock from top", OTHER_JOB_TYPE),
+    "end mill": _MILLING_JOB_TYPES,
+    "ball nose end mill": _MILLING_JOB_TYPES,
+    "bull nose / corner radius end mill": _MILLING_JOB_TYPES,
+    "indexable end mill": _MILLING_JOB_TYPES,
+    "round insert / bull cutter": _MILLING_JOB_TYPES,
+}
+# Job types offered by earlier releases: (current job type, surface type).
+_LEGACY_JOB_TYPES = {
+    "3d surface": (SURFACE_JOB_TYPE, "Freeform / 3D"),
+    "steep wall / 3d wall finish": (SURFACE_JOB_TYPE, "Steep wall"),
+    "flat / land finish": (SURFACE_JOB_TYPE, "Flat land"),
+    "open-ended material removal": (OTHER_JOB_TYPE, ""),
+}
+
+
+def guided_job_types_for_tool(tool_type: str) -> tuple[str, ...]:
+    """Return the physical jobs a tool can do; an unknown tool offers them all."""
+
+    return _JOB_TYPES_BY_TOOL.get(str(tool_type or "").strip().casefold(), GUIDED_JOB_TYPES)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, database: Database, parent=None):
         super().__init__(parent)
@@ -359,6 +398,10 @@ class MainWindow(QMainWindow):
         self.workflow_combo.currentIndexChanged.connect(self._workflow_changed)
         mode_row.addWidget(mode_label)
         mode_row.addWidget(self.workflow_combo, 1)
+        self.recent_button = QPushButton("Recent…")
+        self.recent_button.setToolTip("Reopen a recent calculation")
+        self.recent_button.clicked.connect(self._open_recent)
+        mode_row.addWidget(self.recent_button)
         outer.addLayout(mode_row)
 
         self.workflow_stack = QStackedWidget()
@@ -399,15 +442,26 @@ class MainWindow(QMainWindow):
         self.workflow_stack.addWidget(manual_page)
         outer.addWidget(self.workflow_stack, 1)
 
-        recent_group = QGroupBox("Recent calculations")
-        recent_group.setObjectName("recentGroup")
-        recent_layout = QVBoxLayout(recent_group)
-        recent_layout.setContentsMargins(10, 10, 10, 10)
+        # Recent calculations open on demand so the job form keeps the column.
+        self.recent_dialog = QDialog(self)
+        self.recent_dialog.setWindowTitle("Recent calculations")
+        self.recent_dialog.resize(540, 440)
+        recent_layout = QVBoxLayout(self.recent_dialog)
+        recent_hint = QLabel("Double-click a calculation to reopen its inputs and result.")
+        recent_hint.setObjectName("hint")
+        recent_layout.addWidget(recent_hint)
         self.recent_list = QListWidget()
-        self.recent_list.setMaximumHeight(145)
         self.recent_list.itemDoubleClicked.connect(self._load_recent_item)
         recent_layout.addWidget(self.recent_list)
-        outer.addWidget(recent_group)
+
+        self.independent_check = QCheckBox("Independent AI check (slower, second review)")
+        self.independent_check.setChecked(True)
+        self.independent_check.setToolTip(
+            "Ticked: a second AI request reviews the recommendation before it is shown.\n"
+            "Unticked: quicker result from the first AI request only, marked as not cross-checked."
+        )
+        self.independent_check.toggled.connect(self._independent_check_toggled)
+        outer.addWidget(self.independent_check)
 
         actions = QHBoxLayout()
         self.calculate_button = QPushButton("CALCULATE")
@@ -466,7 +520,7 @@ class MainWindow(QMainWindow):
         temporary_form = QFormLayout(self.temporary_tool_group)
         self.temporary_tool_type = QComboBox()
         self.temporary_tool_type.addItems(list(TOOL_TYPES))
-        self.temporary_tool_type.addItem("Round Insert / Bull Cutter")
+        self.temporary_tool_type.currentTextChanged.connect(self._apply_job_type_filter)
         temporary_form.addRow("Tool family", self.temporary_tool_type)
         self.temporary_diameter = double_spin(maximum=500.0, decimals=3, step=0.5)
         temporary_form.addRow("Diameter (mm)", self.temporary_diameter)
@@ -491,12 +545,7 @@ class MainWindow(QMainWindow):
         job_form = QFormLayout(job_group)
         self.guided_job_form = job_form
         self.guided_job_type = QComboBox()
-        self.guided_job_type.addItems([
-            "Profile / outside contour", "Pocket / cavity", "Face / remove stock from top",
-            "3D surface", "Steep wall / 3D wall finish", "Flat / land finish", "Slot",
-            "Open-ended material removal", "Drill hole", "Ream hole", "Tap thread",
-            "Thread mill", "Chamfer / countersink", "Other / describe job",
-        ])
+        self.guided_job_type.addItems(list(GUIDED_JOB_TYPES))
         self.guided_job_type.currentTextChanged.connect(self._guided_job_changed)
         job_form.addRow("Job type", self.guided_job_type)
         self.guided_job_description = QLineEdit()
@@ -504,22 +553,33 @@ class MainWindow(QMainWindow):
         job_form.addRow("Job description", self.guided_job_description)
         self.guided_fields: dict[str, QWidget] = {}
         self.guided_rows: dict[str, tuple[QWidget, QWidget]] = {}
+        self.guided_row_forms: dict[str, QFormLayout] = {}
+        # Essentials stay in the job form; everything that has a sensible
+        # remembered value or is optional lives in a collapsed section.
+        self.optional_toggle = QPushButton()
+        self.optional_toggle.setObjectName("sectionToggle")
+        self.optional_toggle.setCheckable(True)
+        self.optional_contents = QWidget()
+        optional_form = QFormLayout(self.optional_contents)
+        optional_form.setContentsMargins(0, 4, 0, 0)
+        self.guided_optional_form = optional_form
+        target_form = job_form
 
         def add_text(key: str, label: str, placeholder: str = "") -> QLineEdit:
             widget = QLineEdit()
             widget.setPlaceholderText(placeholder)
-            self._add_guided_field(job_form, key, label, widget)
+            self._add_guided_field(target_form, key, label, widget)
             return widget
 
         def add_number(key: str, label: str, maximum: float = 5000.0, decimals: int = 3, step: float = 0.5):
             widget = double_spin(maximum=maximum, decimals=decimals, step=step)
-            self._add_guided_field(job_form, key, label, widget)
+            self._add_guided_field(target_form, key, label, widget)
             return widget
 
         def add_choice(key: str, label: str, choices: tuple[str, ...] | list[str]):
             widget = QComboBox()
             widget.addItems(list(choices))
-            self._add_guided_field(job_form, key, label, widget)
+            self._add_guided_field(target_form, key, label, widget)
             return widget
 
         self.job_depth = add_number("job_depth_mm", "Required job depth / material thickness (mm)", decimals=2)
@@ -527,20 +587,21 @@ class MainWindow(QMainWindow):
         self.stock_to_remove = add_number("stock_to_remove_mm", "Total stock to remove (mm)")
         self.face_width = add_number("face_width_mm", "Approximate face width (mm)")
         self.pocket_depth = add_number("pocket_depth_mm", "Total pocket depth (mm)")
-        self.smallest_corner = add_number("smallest_corner_radius_mm", "Smallest internal corner radius (mm)")
         self.stock_remaining = add_number("stock_remaining_mm", "Stock remaining for 3D finish (mm)")
-        self.open_closed = add_choice("open_closed", "Contour / pocket", ["Not applicable", "Open", "Closed"])
-        self.stock_condition = add_choice("stock_condition", "Stock condition", ["Unknown", "Flame-cut", "Saw-cut", "Machined", "Cast / forged"])
-        self.finish_requirement = add_choice("finish_requirement", "Finish required", ["Not specified", "Rough only", "Finish only", "Rough + Finish"])
-        self.target_finish_allowance = add_number("target_finish_allowance_mm", "Preferred finish allowance (optional, mm)")
-        self.entry_access = add_choice("entry_access", "Entry access", ["Unknown", "Open edge", "Predrilled hole", "Plunge access", "Ramp access"])
         self.surface_type = add_choice("surface_type", "Surface type", ["Unknown", "Steep wall", "Shallow surface", "Flat land", "Freeform / 3D"])
+        self.finish_requirement = add_choice("finish_requirement", "Finish required", ["Not specified", "Rough only", "Finish only", "Rough + Finish"])
         self.hole_diameter = add_number("hole_diameter_mm", "Required hole diameter (mm)", 1000.0, 3)
         self.hole_depth = add_number("hole_depth_mm", "Hole depth (mm)", 5000.0, 2)
         self.existing_hole = add_number("existing_hole_diameter_mm", "Existing hole diameter (mm)", 1000.0, 3)
         self.thread_size = add_text("thread_size", "Thread size", "e.g. M12")
         self.thread_pitch = add_number("pitch_mm", "Thread pitch (mm)", 25.0, 4, 0.25)
         self.thread_depth = add_number("thread_depth_mm", "Thread depth (mm)", 1000.0, 2)
+        target_form = optional_form
+        self.open_closed = add_choice("open_closed", "Contour / pocket", ["Not applicable", "Open", "Closed"])
+        self.smallest_corner = add_number("smallest_corner_radius_mm", "Smallest internal corner radius (mm)")
+        self.entry_access = add_choice("entry_access", "Entry access", ["Unknown", "Open edge", "Predrilled hole", "Plunge access", "Ramp access"])
+        self.target_finish_allowance = add_number("target_finish_allowance_mm", "Preferred finish allowance (mm)")
+        self.stock_condition = add_choice("stock_condition", "Stock condition", ["Unknown", "Flame-cut", "Saw-cut", "Machined", "Cast / forged"])
         self.guided_coolant = add_choice("coolant_type", "Coolant / lubrication", COOLANTS)
         self.cut_priority = add_choice("cut_priority", "Cut priority", ["Balanced", "Tool life", "Productivity", "Surface finish", "Quiet / low vibration"])
         self.setup_stickout = add_number("stickout_mm", "Actual stickout for this setup (mm)")
@@ -548,6 +609,21 @@ class MainWindow(QMainWindow):
         self.setup_notes = add_text("setup_notes", "Setup notes (optional)", "e.g. Long overhang, thin wall, clamp clearance")
         self.guided_job_group = job_group
         content_layout.addWidget(job_group)
+
+        self.optional_contents.setVisible(False)
+        self.optional_toggle.toggled.connect(self._optional_details_toggled)
+        self.guided_coolant.currentTextChanged.connect(self._update_optional_summary)
+        self.cut_priority.currentTextChanged.connect(self._update_optional_summary)
+        self.setup_stickout.valueChanged.connect(self._update_optional_summary)
+        optional_group = QGroupBox("Setup details")
+        optional_group.setObjectName("secondaryGroup")
+        optional_layout = QVBoxLayout(optional_group)
+        optional_layout.addWidget(self.optional_toggle)
+        optional_layout.addWidget(self.optional_contents)
+        optional_group.setToolTip("Remembered between jobs. Change only what differs for this setup.")
+        self.guided_optional_group = optional_group
+        content_layout.addWidget(optional_group)
+        self._update_optional_summary()
 
         advanced = QGroupBox("ADVANCED OVERRIDES (optional constraints)")
         advanced.setCheckable(True)
@@ -604,6 +680,46 @@ class MainWindow(QMainWindow):
         form.addRow(label_widget, widget)
         self.guided_fields[key] = widget
         self.guided_rows[key] = (label_widget, widget)
+        self.guided_row_forms[key] = form
+
+    def _optional_details_toggled(self, visible: bool) -> None:
+        self.optional_contents.setVisible(visible)
+        self._update_optional_summary()
+
+    def _update_optional_summary(self, *_args) -> None:
+        if not hasattr(self, "setup_stickout"):
+            return
+        parts = [self.guided_coolant.currentText(), self.cut_priority.currentText()]
+        if self.setup_stickout.value() > 0:
+            parts.append(f"stickout {self.setup_stickout.value():g} mm")
+        arrow = "▾" if self.optional_toggle.isChecked() else "▸"
+        self.optional_toggle.setText(f"{arrow}  {' · '.join(parts)}  (change…)")
+
+    def _guided_tool_type(self) -> str:
+        """Tool label of the current Guided selection, or '' when none."""
+
+        value = self.guided_tool_combo.currentData()
+        if value == "temporary":
+            return self.temporary_tool_type.currentText()
+        if value is None:
+            return ""
+        return str(self._guided_snapshot.get("tool_type") or "")
+
+    def _apply_job_type_filter(self, *_args) -> None:
+        """Offer only the jobs the selected tool can do."""
+
+        if not hasattr(self, "guided_rows"):
+            return
+        allowed = guided_job_types_for_tool(self._guided_tool_type())
+        current = self.guided_job_type.currentText()
+        existing = tuple(self.guided_job_type.itemText(i) for i in range(self.guided_job_type.count()))
+        if existing != allowed:
+            self.guided_job_type.blockSignals(True)
+            self.guided_job_type.clear()
+            self.guided_job_type.addItems(list(allowed))
+            self.guided_job_type.setCurrentText(current if current in allowed else allowed[0])
+            self.guided_job_type.blockSignals(False)
+        self._guided_job_changed(self.guided_job_type.currentText())
 
     def _refresh_guided_tools(self) -> None:
         if not hasattr(self, "guided_tool_combo"):
@@ -654,6 +770,7 @@ class MainWindow(QMainWindow):
             note_suffix = f" · {len(notes)} workshop note(s)" if notes else ""
             details = " · ".join(part for part in (identity, ", ".join(dimensions)) if part)
             self.guided_tool_facts.setText((details or "Tool details incomplete") + suffix + note_suffix)
+        self._apply_job_type_filter()
         if not self._restoring_state:
             self._save_calculator_state()
 
@@ -670,14 +787,11 @@ class MainWindow(QMainWindow):
             visible |= {"pocket_depth_mm", "stock_to_remove_mm", "smallest_corner_radius_mm", "open_closed", "entry_access", "finish_requirement", "target_finish_allowance_mm"}
         elif "face" in job:
             visible |= {"stock_to_remove_mm", "face_width_mm", "finish_requirement", "target_finish_allowance_mm"}
-        elif "3d surface" in job or "steep wall" in job or "flat / land" in job:
+        elif "3d" in job:
             visible |= {"stock_remaining_mm", "surface_type", "finish_requirement", "target_finish_allowance_mm", "entry_access"}
         elif job == "slot":
             visible |= {"job_depth_mm", "stock_on_side_mm", "open_closed", "entry_access", "finish_requirement", "target_finish_allowance_mm"}
             self.guided_rows["job_depth_mm"][0].setText("Required slot depth (mm)")
-        elif "open-ended" in job:
-            visible |= {"job_depth_mm", "stock_to_remove_mm", "entry_access"}
-            self.guided_rows["job_depth_mm"][0].setText("Required removal depth (mm)")
         elif "drill hole" in job:
             visible |= {"hole_diameter_mm", "hole_depth_mm", "entry_access"}
         elif "ream hole" in job:
@@ -691,7 +805,7 @@ class MainWindow(QMainWindow):
             self.guided_rows["job_depth_mm"][0].setText("Required job depth / thickness (mm)")
         self._visible_guided_fields = visible
         for key, (label, _widget) in self.guided_rows.items():
-            self.guided_job_form.setRowVisible(label, key in visible)
+            self.guided_row_forms[key].setRowVisible(label, key in visible)
 
         advanced_visible = {"max_rpm", "max_feed_mm_min"}
         if not any(kind in job for kind in ("drill hole", "ream hole", "tap thread", "chamfer")):
@@ -701,19 +815,23 @@ class MainWindow(QMainWindow):
             }
         if "thread mill" not in job and not any(kind in job for kind in ("drill hole", "ream hole", "tap thread", "chamfer")):
             advanced_visible.add("preferred_operation")
-        if any(kind in job for kind in ("profile", "pocket", "slot", "open-ended")):
+        if any(kind in job for kind in ("profile", "pocket", "slot", "other")):
             advanced_visible |= {"must_use_full_depth", "must_use_one_pass", "avoid_full_slot"}
         self._visible_advanced_fields = advanced_visible
         for key, widget in self.advanced_fields.items():
             self.guided_advanced_form.setRowVisible(widget, key in advanced_visible)
         if not self._restoring_state:
             self._save_calculator_state()
+            if hasattr(self, "result_fields") and self.workflow_mode == "guided":
+                self._reset_result_display()
 
     def _workflow_changed(self, _index: int = -1) -> None:
         if not hasattr(self, "workflow_stack"):
             return
         self.workflow_mode = str(self.workflow_combo.currentData() or "guided")
         self.workflow_stack.setCurrentIndex(0 if self.workflow_mode == "guided" else 1)
+        if hasattr(self, "independent_check"):
+            self.independent_check.setVisible(self.workflow_mode == "guided")
         if not self._restoring_state:
             self._save_calculator_state()
         if hasattr(self, "result_fields"):
@@ -833,6 +951,16 @@ class MainWindow(QMainWindow):
             tool_snapshot=snapshot,
         )
 
+    def _independent_check_toggled(self, _checked: bool = False) -> None:
+        if not self._restoring_state:
+            self._save_calculator_state()
+
+    def _open_recent(self) -> None:
+        self._load_recent()
+        self.recent_dialog.show()
+        self.recent_dialog.raise_()
+        self.recent_dialog.activateWindow()
+
     def _open_tool_library(self) -> None:
         dialog = ToolLibraryDialog(self.tool_library, self._make_tool_import_service, self, model=self.settings.model)
         dialog.exec()
@@ -912,6 +1040,9 @@ class MainWindow(QMainWindow):
         result_scroll.setObjectName("resultScroll")
         result_scroll.setWidgetResizable(True)
         result_scroll.setFrameShape(QFrame.NoFrame)
+        # A permanent scrollbar keeps the cards from shifting sideways when a
+        # result, warning or the Details section makes the content taller.
+        result_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         result_content = QWidget()
         result_content.setObjectName("resultContent")
         outer = QVBoxLayout(result_content)
@@ -1011,6 +1142,16 @@ class MainWindow(QMainWindow):
         self.pass_plan_group.setVisible(False)
         outer.addWidget(self.pass_plan_group)
 
+        self.details_button = QPushButton()
+        self.details_button.setObjectName("sectionToggle")
+        self.details_button.setCheckable(True)
+        self.details_button.toggled.connect(self._toggle_details)
+        outer.addWidget(self.details_button)
+        self.details_container = QWidget()
+        details_layout = QVBoxLayout(self.details_container)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(12)
+
         info_group = QGroupBox("Secondary information")
         info_group.setObjectName("secondaryGroup")
         info_layout = QGridLayout(info_group)
@@ -1046,7 +1187,7 @@ class MainWindow(QMainWindow):
             info_layout.addWidget(label_widget, row, 0)
             info_layout.addWidget(value, row, 1)
         self.info_group = info_group
-        outer.addWidget(info_group)
+        details_layout.addWidget(info_group)
 
         self.derived_group = QGroupBox("Derived data")
         self.derived_group.setObjectName("secondaryGroup")
@@ -1078,7 +1219,7 @@ class MainWindow(QMainWindow):
             row = len(self.derived_rows) - 1
             derived_layout.addWidget(label_widget, row, 0)
             derived_layout.addWidget(value, row, 1)
-        outer.addWidget(self.derived_group)
+        details_layout.addWidget(self.derived_group)
 
         self.ai_context_group = QGroupBox("AI context / estimates")
         self.ai_context_group.setObjectName("secondaryGroup")
@@ -1118,10 +1259,18 @@ class MainWindow(QMainWindow):
         self.notes.setPlaceholderText("AI machining notes and warnings will appear here.")
         notes_layout.addWidget(self.notes)
         self.notes_group = notes_group
-        outer.addWidget(notes_group)
+        details_layout.addWidget(notes_group)
         # Optional content follows the stable calculator display.
-        outer.addWidget(self.ai_context_group)
+        details_layout.addWidget(self.ai_context_group)
+        outer.addWidget(self.details_container)
+        self.key_warnings = QLabel()
+        self.key_warnings.setObjectName("keyWarnings")
+        self.key_warnings.setWordWrap(True)
+        self.key_warnings.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.key_warnings.setVisible(False)
+        outer.addWidget(self.key_warnings)
         outer.addWidget(self.result_banner)
+        self._toggle_details(False)
 
         buttons = QHBoxLayout()
         self.retry_button = QPushButton("Retry")
@@ -1201,6 +1350,7 @@ class MainWindow(QMainWindow):
         guided_state = {
             "tool_id": self.guided_tool_combo.currentData(),
             "job_type": self.guided_job_type.currentText(),
+            "independent_check": self.independent_check.isChecked(),
             "job_description": self.guided_job_description.text().strip(),
             "fields": {key: widget_value(widget) for key, widget in self.guided_fields.items()},
             "advanced": {key: widget_value(widget) for key, widget in self.advanced_fields.items()},
@@ -1223,6 +1373,7 @@ class MainWindow(QMainWindow):
                 "tool_type": self.tool_combo.currentText(),
                 "operation": current_operation,
                 "workflow_mode": self.workflow_mode,
+                "result_details_open": self.details_button.isChecked(),
             },
             "guided": guided_state,
             "families": {name: page.values() for name, page in self.pages.items()},
@@ -1294,8 +1445,11 @@ class MainWindow(QMainWindow):
         guided = state.get("guided", {})
         if isinstance(guided, dict):
             job_type = guided.get("job_type")
+            legacy_surface = ""
             if isinstance(job_type, str):
+                job_type, legacy_surface = _LEGACY_JOB_TYPES.get(job_type.strip().casefold(), (job_type, ""))
                 self._set_combo_casefold(self.guided_job_type, job_type)
+            self.independent_check.setChecked(bool(guided.get("independent_check", True)))
             description = guided.get("job_description")
             if isinstance(description, str):
                 self.guided_job_description.setText(description)
@@ -1318,6 +1472,8 @@ class MainWindow(QMainWindow):
                             pass
                     elif isinstance(widget, QLineEdit):
                         widget.setText(str(value))
+            if legacy_surface and self.surface_type.currentText() == "Unknown":
+                self._set_combo_casefold(self.surface_type, legacy_surface)
             temporary = guided.get("temporary", {})
             if isinstance(temporary, dict):
                 self._set_combo_casefold(self.temporary_tool_type, str(temporary.get("tool_type", "")))
@@ -1337,7 +1493,8 @@ class MainWindow(QMainWindow):
         workflow_mode = str(global_state.get("workflow_mode", "guided"))
         mode_index = self.workflow_combo.findData(workflow_mode)
         self.workflow_combo.setCurrentIndex(mode_index if mode_index >= 0 else 0)
-        self._guided_job_changed(self.guided_job_type.currentText())
+        self.details_button.setChecked(bool(global_state.get("result_details_open", False)))
+        self._apply_job_type_filter()
 
     def _save_window_state(self) -> None:
         rect = self.normalGeometry() if self.isMaximized() else self.geometry()
@@ -1577,6 +1734,7 @@ class MainWindow(QMainWindow):
             validated_response=json.dumps(result.to_dict(), indent=2),
         )
         self._show_result(outcome)
+        self.recent_dialog.hide()
         self.result_status.setText("Reopened recent calculation")
         self._save_calculator_state()
 
@@ -1620,6 +1778,7 @@ class MainWindow(QMainWindow):
         self._progress_timer.start()
         self._update_calculation_progress()
         worker_service = CalculationService(self.database, ai_service)
+        worker_service.independent_check = self.independent_check.isChecked()
         self._thread = QThread(self)
         self._worker = CalculationWorker(worker_service, request, self._machine())
         self._worker.moveToThread(self._thread)
@@ -1781,9 +1940,26 @@ class MainWindow(QMainWindow):
 
     def _reset_result_display(self) -> None:
         self._current_outcome = None
-        family = tool_family(self.tool_combo.currentText())
-        operation = str(self.pages[family].values().get("operation", ""))
+        guided = self.workflow_mode == "guided"
+        if guided:
+            # The placeholder follows the selected cutter (or the job when no
+            # cutter is chosen yet), not the hidden Advanced / Manual page.
+            job = self.guided_job_type.currentText().casefold()
+            tool_type = self._guided_tool_type()
+            if tool_type:
+                family = tool_family(tool_type)
+            else:
+                family = next(
+                    (name for marker, name in (("drill hole", "drill"), ("ream", "reamer"), ("tap thread", "tap")) if marker in job),
+                    "end_mill",
+                )
+            operation = ""
+        else:
+            family = tool_family(self.tool_combo.currentText())
+            operation = str(self.pages[family].values().get("operation", ""))
         self._apply_result_layout(family, operation)
+        self._has_key_warnings = False
+        self.key_warnings.setVisible(False)
         for values in (self.result_fields, self.info_labels, self.derived_labels, self.ai_context_labels):
             for value in values.values():
                 value.setText("—")
@@ -1797,7 +1973,7 @@ class MainWindow(QMainWindow):
         self.result_status.setText("Ready to calculate")
         self.result_banner.setVisible(False)
         self.retry_button.setVisible(False)
-        legacy_warning = legacy_operation_warning(self.tool_combo.currentText(), operation)
+        legacy_warning = "" if guided else legacy_operation_warning(self.tool_combo.currentText(), operation)
         if legacy_warning:
             self.result_banner.setText(legacy_warning)
             self.result_banner.setVisible(True)
@@ -1931,6 +2107,15 @@ class MainWindow(QMainWindow):
                 notes.append(clean_note)
         self.notes.setPlainText("\n".join(notes))
         self.notes.setPlaceholderText("No machining notes or warnings were returned.")
+        key_items, hidden_count = self._key_warnings(
+            list(result.warnings) + ([peck_warning] if peck_warning else []) + ([legacy_warning] if legacy_warning else [])
+        )
+        if key_items:
+            more = f"\n+ {hidden_count} more under Details" if hidden_count else ""
+            self.key_warnings.setText("\n".join("⚠  " + item for item in key_items) + more)
+        # With Details open the full notes are on screen, so do not repeat them.
+        self._has_key_warnings = bool(key_items)
+        self.key_warnings.setVisible(self._has_key_warnings and not self.details_button.isChecked())
 
         if outcome.source == "mock":
             model_name = model_display_name(outcome.model)
@@ -1951,6 +2136,8 @@ class MainWindow(QMainWindow):
         }
         if is_guided and result.verification_status in verification_labels:
             banner += " · " + verification_labels[result.verification_status]
+        elif is_guided and outcome.source in {"ai", "cache"}:
+            banner += " · quick result, not cross-checked"
         if is_guided and result.research_sources:
             banner += f" · {len(result.research_sources)} web source(s)"
         requires_review = is_guided and result.verification_status in {"review_required", "check_incomplete"}
@@ -2128,6 +2315,32 @@ class MainWindow(QMainWindow):
             "verification_raw_response": outcome.verification_raw_response,
         }
         self.debug_editors["evidence"].setPlainText(json.dumps(evidence, indent=2, ensure_ascii=False, sort_keys=True))
+
+    def _toggle_details(self, visible: bool) -> None:
+        self.details_container.setVisible(visible)
+        if hasattr(self, "key_warnings"):
+            self.key_warnings.setVisible(getattr(self, "_has_key_warnings", False) and not visible)
+        self.details_button.setText(
+            "▾  Hide details" if visible else "▸  Details — cutting data, derived values, notes and sources"
+        )
+        if not self._restoring_state:
+            self._save_calculator_state()
+
+    @staticmethod
+    def _key_warnings(warnings: list[str], limit: int = 3) -> tuple[list[str], int]:
+        """Pick the warnings an operator must see; the rest stay in Details."""
+
+        def priority(text: str) -> int:
+            lowered = text.casefold()
+            if "independent check" in lowered or "unverified" in lowered:
+                return 0
+            if "locally" in lowered or "conflict" in lowered:
+                return 1
+            return 2
+
+        unique = list(dict.fromkeys(item.strip() for item in warnings if item and item.strip()))
+        ordered = sorted(unique, key=priority)
+        return ordered[:limit], max(0, len(ordered) - limit)
 
     def _toggle_debug(self, visible: bool) -> None:
         self._debug_visible = visible

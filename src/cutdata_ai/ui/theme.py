@@ -167,7 +167,8 @@ def _stylesheet(colors: dict[str, str]) -> str:
         QLabel#connectionWarning {{ color: {colors['error_text']}; font-weight: 700; }}
         QLabel#resultStatus {{ color: {colors['muted']}; font-size: 11pt; }}
         QLabel#resultBanner {{ background: {colors['info_bg']}; color: {colors['info_text']}; padding: 8px 12px; border-radius: 5px; font-weight: 600; }}
-        QLabel#reviewBanner {{ background: {colors['warning_bg']}; color: {colors['warning_text']}; padding: 8px 12px; border-radius: 5px; font-weight: 700; }}
+        QPushButton#sectionToggle {{ text-align: left; font-weight: 700; }}
+        QLabel#reviewBanner, QLabel#keyWarnings {{ background: {colors['warning_bg']}; color: {colors['warning_text']}; padding: 8px 12px; border-radius: 5px; font-weight: 700; }}
         QLabel#errorBanner {{ background: {colors['error_bg']}; color: {colors['error_text']}; padding: 8px 12px; border-radius: 5px; font-weight: 600; }}
         QFrame#inputPanel, QFrame#resultPanel {{ background: {colors['surface']}; border: 1px solid {colors['border_soft']}; border-radius: 7px; }}
         QScrollArea#resultScroll, QScrollArea#settingsScroll, QWidget#resultContent, QWidget#settingsContent {{ background: transparent; border: none; }}
