@@ -8,3 +8,6 @@ A simpler Guided screen. Calculation rules and prompts are unchanged.
 - Results show the recommendation, the main values, the pass plan and up to three key warnings. Cutting data, derived values, notes and sources are under **Details**; the choice is remembered.
 - The empty result layout matches the selected tool, so a milling job no longer shows Peck / Q.
 - New **Independent AI check** tick box. Unticked gives a quicker result from the first AI request only, marked "quick result, not cross-checked". An unchecked result is never reused when the check is ticked.
+- Reopening a recent calculation returns to the workflow it was made in. A Guided calculation refills the Guided form: tool, job type, job values, setup details and advanced limits.
+- Advanced / Manual has a **From Tool Library** list that fills the tool family, diameter, flute/insert count, material, coating and insert details from a saved cutter. The values stay editable.
+- Settings has one **AI engine** choice: Recommended, Faster or Most thorough. The separate model and reasoning lists appear only for Custom.

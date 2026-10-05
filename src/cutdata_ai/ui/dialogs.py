@@ -183,6 +183,15 @@ class AboutDialog(QDialog):
         layout.addWidget(buttons)
 
 
+# One everyday choice in place of separate model and reasoning lists.
+ENGINE_PRESETS = (
+    ("Recommended", DEFAULT_MODEL, DEFAULT_REASONING_EFFORT),
+    ("Faster", "gpt-6-luna", "low"),
+    ("Most thorough", "gpt-6-astra", "high"),
+)
+ENGINE_PRESET_CUSTOM = "custom"
+
+
 class SettingsDialog(QDialog):
     """Edit model/API preferences and the local machine profiles."""
 
@@ -271,21 +280,37 @@ class SettingsDialog(QDialog):
         self.reasoning.setCurrentIndex(
             self.reasoning.findData(normalise_reasoning_effort(settings.reasoning_effort))
         )
+        self.engine_preset = QComboBox()
+        for label, model_id, effort in ENGINE_PRESETS:
+            self.engine_preset.addItem(
+                f"{label} — {model_display_name(model_id)}, {REASONING_EFFORT_DISPLAY_NAMES[effort]} reasoning",
+                (model_id, effort),
+            )
+        self.engine_preset.addItem("Custom — choose model and reasoning", ENGINE_PRESET_CUSTOM)
+        preset_form = QFormLayout()
+        preset_form.addRow("AI engine", self.engine_preset)
+        api_layout.addLayout(preset_form)
+        # The individual lists are only shown for a Custom engine.
+        self.engine_advanced = QWidget()
+        engine_advanced_layout = QVBoxLayout(self.engine_advanced)
+        engine_advanced_layout.setContentsMargins(0, 0, 0, 0)
         engine_form.addRow("Model", self.model)
         engine_form.addRow("Reasoning", self.reasoning)
-        api_layout.addLayout(engine_form)
+        engine_advanced_layout.addLayout(engine_form)
         reasoning_hint = QLabel(
             "Maximum reasoning can take much longer. Medium is the default; "
             "AI Guided runs research and then an independent check."
         )
         reasoning_hint.setObjectName("hint")
         reasoning_hint.setWordWrap(True)
-        api_layout.addWidget(reasoning_hint)
+        engine_advanced_layout.addWidget(reasoning_hint)
         self.model_selection_notice = QLabel()
         self.model_selection_notice.setObjectName("modelSelectionNotice")
         self.model_selection_notice.setWordWrap(True)
-        api_layout.addWidget(self.model_selection_notice)
         self.model.currentIndexChanged.connect(self._model_selection_changed)
+        self.model.currentIndexChanged.connect(self._sync_engine_preset)
+        self.reasoning.currentIndexChanged.connect(self._sync_engine_preset)
+        self.engine_preset.activated.connect(self._engine_preset_chosen)
         self._model_selection_changed()
         model_help = QLabel(
             "Model roles: "
@@ -296,7 +321,10 @@ class SettingsDialog(QDialog):
         )
         model_help.setObjectName("modelRoleHint")
         model_help.setWordWrap(True)
-        api_layout.addWidget(model_help)
+        engine_advanced_layout.addWidget(model_help)
+        api_layout.addWidget(self.engine_advanced)
+        api_layout.addWidget(self.model_selection_notice)
+        self._sync_engine_preset()
 
         status_heading = QLabel("API STATUS")
         status_heading.setObjectName("formHeading")
@@ -411,6 +439,27 @@ class SettingsDialog(QDialog):
             self.model_selection_notice.setText(
                 f"Selected {name}. This change is not active yet — choose SAVE SETTINGS or SAVE & RESTART APP."
             )
+
+    def _sync_engine_preset(self, _index: int = -1) -> None:
+        """Show the preset matching the model and reasoning lists, else Custom."""
+
+        current = (self.model.currentData(), self.reasoning.currentData())
+        index = next(
+            (i for i in range(self.engine_preset.count()) if self.engine_preset.itemData(i) == current),
+            self.engine_preset.count() - 1,
+        )
+        self.engine_preset.setCurrentIndex(index)
+        self.engine_advanced.setVisible(self.engine_preset.currentData() == ENGINE_PRESET_CUSTOM)
+
+    def _engine_preset_chosen(self, _index: int = -1) -> None:
+        choice = self.engine_preset.currentData()
+        if choice == ENGINE_PRESET_CUSTOM:
+            self.engine_advanced.setVisible(True)
+            return
+        model_id, effort = choice
+        self.model.setCurrentIndex(self.model.findData(model_id))
+        self.reasoning.setCurrentIndex(self.reasoning.findData(effort))
+        self._sync_engine_preset()
 
     def _save_and_restart(self) -> None:
         self._save()

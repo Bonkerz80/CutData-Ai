@@ -348,3 +348,56 @@ def test_setup_details_are_collapsed_but_still_sent(window, qapp):
     window.optional_toggle.setChecked(True)
     qapp.processEvents()
     assert window.guided_coolant.isVisible()
+
+
+def test_recent_guided_calculation_refills_the_guided_form(window, qapp):
+    tool = next(item for item in ToolLibraryService(window.database).list_tools() if item["display_name"] == "25 Tipped")
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+    window.guided_job_type.setCurrentText("Pocket / cavity")
+    window.pocket_depth.setValue(18)
+    window.guided_coolant.setCurrentText("Mist")
+    window.guided_advanced_group.setChecked(True)
+    window.advanced_fields["max_rpm"].setValue(1500)
+    request = window._collect_request()
+    normalized = normalize_request(request)
+    result = MachiningResult(
+        rpm=900, feed_mm_min=180, feed_per_tooth_mm=0.1,
+        recommended_operation="Roughing Waterline", recommended_strategy="Rough the pocket",
+        recommended_pass_count=1, pass_plan=[{"stage": "Rough", "passes": 1}],
+    )
+    window.database.add_recent(request_hash(normalized), normalized, result.to_dict(), "ai", model="gpt-6-luna")
+
+    # Change everything, including the workflow, then reopen the record.
+    window.guided_tool_combo.setCurrentIndex(0)
+    window.pocket_depth.setValue(0)
+    window.guided_coolant.setCurrentText("Flood coolant")
+    window.guided_advanced_group.setChecked(False)
+    window.advanced_fields["max_rpm"].setValue(0)
+    window.workflow_combo.setCurrentIndex(1)
+    window._load_recent()
+    window._load_recent_item(window.recent_list.item(0))
+
+    assert window.workflow_mode == "guided"
+    assert window.guided_tool_combo.currentData() == tool["id"]
+    assert window.guided_job_type.currentText() == "Pocket / cavity"
+    assert window.pocket_depth.value() == 18
+    assert window.guided_coolant.currentText() == "Mist"
+    assert window.guided_advanced_group.isChecked()
+    assert window.advanced_fields["max_rpm"].value() == 1500
+    assert window.result_fields["rpm"].text() == "900 RPM"
+    assert request_hash(normalize_request(window._collect_request())) == request_hash(normalized)
+
+
+def test_manual_form_can_be_filled_from_a_library_tool(window):
+    tool = next(item for item in ToolLibraryService(window.database).list_tools() if item["display_name"] == "25 Tipped")
+    window.workflow_combo.setCurrentIndex(1)
+    window.manual_library_combo.setCurrentIndex(window.manual_library_combo.findData(tool["id"]))
+    window._fill_manual_from_library()
+
+    assert window.tool_combo.currentText() == "Indexable End Mill"
+    request = window._collect_request()
+    assert request.workflow_mode == "manual"
+    assert request.parameters["cutter_diameter_mm"] == 25
+    assert request.parameters["insert_count"] == 2
+    assert request.parameters["insert_code"] == "XDPT170408PESRMM"
+    assert request.parameters["insert_grade"] == "WP25PM"

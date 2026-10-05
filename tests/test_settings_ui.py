@@ -539,3 +539,31 @@ def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_p
         assert not QIcon(str(WINDOWS_ICON_PATH)).isNull()
     finally:
         close_widget(dialog, qapp)
+
+
+def test_engine_preset_sets_model_and_reasoning_and_reveals_custom_lists(tmp_path):
+    from PySide6.QtWidgets import QApplication
+
+    from src.cutdata_ai.config.settings import AppSettings
+    from src.cutdata_ai.ui.dialogs import SettingsDialog
+
+    app = QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(Database(tmp_path / "preset.sqlite3"), AppSettings())
+    try:
+        assert dialog.engine_preset.currentText().startswith("Recommended")
+        assert dialog.engine_advanced.isHidden()
+
+        dialog.engine_preset.setCurrentIndex(2)
+        dialog._engine_preset_chosen()
+        assert dialog.model.currentData() == "gpt-6-astra"
+        assert dialog.reasoning.currentData() == "high"
+        assert dialog.engine_advanced.isHidden()
+
+        # A combination outside the presets is shown as Custom.
+        dialog.reasoning.setCurrentIndex(dialog.reasoning.findData("xhigh"))
+        assert dialog.engine_preset.currentText().startswith("Custom")
+        assert not dialog.engine_advanced.isHidden()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+        app.processEvents()

@@ -418,6 +418,11 @@ class MainWindow(QMainWindow):
         self.tool_combo.addItems(list(TOOL_TYPES))
         self.tool_combo.setCurrentText(self.settings.last_tool_type)
         self.tool_combo.currentTextChanged.connect(self._tool_changed)
+        self.manual_library_combo = QComboBox()
+        self._compact_combo(self.manual_library_combo)
+        self.manual_library_combo.setToolTip("Fill the tool details below from a Tool Library cutter. Values stay editable.")
+        self.manual_library_combo.activated.connect(self._fill_manual_from_library)
+        manual_tool_form.addRow("From Tool Library", self.manual_library_combo)
         manual_tool_form.addRow("Tool family", self.tool_combo)
         manual_layout.addWidget(manual_tool_group)
 
@@ -732,10 +737,46 @@ class MainWindow(QMainWindow):
             status = " · NEEDS REVIEW" if tool.get("needs_review") else ""
             self.guided_tool_combo.addItem(str(tool.get("display_name", "Workshop tool")) + status, int(tool["id"]))
         self.guided_tool_combo.addItem("Temporary / unsaved tool", "temporary")
+        if hasattr(self, "manual_library_combo"):
+            self.manual_library_combo.clear()
+            self.manual_library_combo.addItem("Fill from a saved tool…", None)
+            for tool in self.tool_library.list_tools():
+                self.manual_library_combo.addItem(str(tool.get("display_name", "Workshop tool")), int(tool["id"]))
         target = next((i for i in range(self.guided_tool_combo.count()) if self.guided_tool_combo.itemData(i) == selected), 0)
         self.guided_tool_combo.setCurrentIndex(target)
         self.guided_tool_combo.blockSignals(False)
         self._guided_tool_changed()
+
+    def _fill_manual_from_library(self, _index: int = -1) -> None:
+        """Copy a library cutter's known facts into the Advanced / Manual form."""
+
+        tool_id = self.manual_library_combo.currentData()
+        snapshot = self.tool_library.tool_snapshot(int(tool_id)) if tool_id is not None else None
+        if not snapshot:
+            return
+        tool_type = compatible_tool_type(str(snapshot.get("tool_type") or ""))
+        if tool_type:
+            self._set_combo_casefold(self.tool_combo, tool_type)
+        insert = snapshot.get("insert") or {}
+        diameter = snapshot.get("effective_cutting_diameter_mm") or snapshot.get("diameter_mm")
+        facts = {
+            "diameter_mm": diameter,
+            "cutter_diameter_mm": diameter,
+            "flute_count": snapshot.get("flute_count"),
+            "insert_count": snapshot.get("insert_count"),
+            "tool_material": snapshot.get("tool_material"),
+            "coating": snapshot.get("coating"),
+            "corner_radius_mm": snapshot.get("corner_radius_mm"),
+            "cutting_edge_length_mm": snapshot.get("cutting_edge_length_mm"),
+            "stickout_mm": snapshot.get("default_stickout_mm"),
+            "insert_code": insert.get("designation"),
+            "insert_grade": insert.get("grade"),
+        }
+        # Unknown library facts leave the existing form values untouched.
+        self.pages[tool_family(self.tool_combo.currentText())].load_values(
+            {key: value for key, value in facts.items() if value not in (None, "")}
+        )
+        self._save_calculator_state()
 
     def _guided_tool_changed(self, _index: int = -1) -> None:
         if not hasattr(self, "guided_tool_combo") or not hasattr(self, "temporary_tool_group"):
@@ -1708,22 +1749,27 @@ class MainWindow(QMainWindow):
         except (json.JSONDecodeError, ValueError) as exc:
             QMessageBox.warning(self, "Recent calculation", f"This saved calculation could not be reopened: {exc}")
             return
+        guided = str(normalized.get("workflow_mode", "")) == "guided"
+        self.workflow_combo.setCurrentIndex(self.workflow_combo.findData("guided" if guided else "manual"))
         self._set_combo_casefold(self.machine_combo, normalized.get("machine", ""))
         self._set_combo_casefold(self.material_combo, normalized.get("material", ""))
-        stored_tool_type = str(normalized.get("tool_type", ""))
-        active_tool_type = compatible_tool_type(stored_tool_type)
-        if active_tool_type:
-            self._set_combo_casefold(self.tool_combo, active_tool_type)
         self.custom_material.setText(normalized.get("custom_material", ""))
         try:
             self.hardness.setValue(float(normalized.get("hardness_hrc") or 0))
         except (TypeError, ValueError):
             self.hardness.setValue(0.0)
-        page = self.pages[tool_family(self.tool_combo.currentText())]
-        page_values = dict(normalized.get("parameters", {}))
-        if "operation" in page.fields:
-            page_values["operation"] = normalized.get("operation", page_values.get("operation", ""))
-        page.load_values(page_values)
+        if guided:
+            self._load_guided_inputs(normalized)
+        else:
+            stored_tool_type = str(normalized.get("tool_type", ""))
+            active_tool_type = compatible_tool_type(stored_tool_type)
+            if active_tool_type:
+                self._set_combo_casefold(self.tool_combo, active_tool_type)
+            page = self.pages[tool_family(self.tool_combo.currentText())]
+            page_values = dict(normalized.get("parameters", {}))
+            if "operation" in page.fields:
+                page_values["operation"] = normalized.get("operation", page_values.get("operation", ""))
+            page.load_values(page_values)
         outcome = CalculationOutcome(
             result=result,
             normalized_request=normalized,
@@ -1737,6 +1783,63 @@ class MainWindow(QMainWindow):
         self.recent_dialog.hide()
         self.result_status.setText("Reopened recent calculation")
         self._save_calculator_state()
+
+    def _load_guided_inputs(self, normalized: dict[str, Any]) -> None:
+        """Refill the Guided form from a stored Guided request."""
+
+        parameters = normalized.get("parameters", {})
+        parameters = parameters if isinstance(parameters, dict) else {}
+        snapshot = normalized.get("tool_snapshot", {})
+        snapshot = snapshot if isinstance(snapshot, dict) else {}
+
+        def number(value: Any) -> float:
+            try:
+                return float(value or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def set_widget(widget: QWidget, value: Any) -> None:
+            if isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QDoubleSpinBox):
+                widget.setValue(number(value))
+            elif isinstance(widget, QComboBox):
+                widget.setCurrentIndex(0)
+                if value not in (None, ""):
+                    self._set_combo_casefold(widget, str(value))
+            elif isinstance(widget, QLineEdit):
+                widget.setText(str(value or ""))
+
+        library_id = snapshot.get("library_id")
+        index = self.guided_tool_combo.findData(int(library_id)) if library_id else -1
+        if index < 0:
+            # The cutter was temporary or has since left the library.
+            index = self.guided_tool_combo.findData("temporary")
+            self._set_combo_casefold(self.temporary_tool_type, str(snapshot.get("tool_type") or normalized.get("tool_type", "")))
+            self.temporary_diameter.setValue(number(snapshot.get("diameter_mm") or parameters.get("diameter_mm")))
+            self.temporary_count.setValue(number(snapshot.get("insert_count") or snapshot.get("flute_count")))
+            self._set_combo_casefold(self.temporary_material, str(snapshot.get("tool_material") or "Unknown"))
+            self._set_combo_casefold(self.temporary_coating, str(snapshot.get("coating") or "Unknown"))
+            self.temporary_manufacturer.setText(str(snapshot.get("manufacturer") or ""))
+        self.guided_tool_combo.setCurrentIndex(index)
+        self._guided_tool_changed()
+
+        job_type = str(parameters.get("job_type", ""))
+        job_type, legacy_surface = _LEGACY_JOB_TYPES.get(job_type.strip().casefold(), (job_type, ""))
+        self._set_combo_casefold(self.guided_job_type, job_type)
+        self.guided_job_description.setText(str(parameters.get("job_description", "")))
+        for key, widget in self.guided_fields.items():
+            # Fields hidden for this job keep whatever was entered earlier.
+            if key in parameters or key in self._visible_guided_fields:
+                set_widget(widget, parameters.get(key))
+        if legacy_surface and "surface_type" not in parameters:
+            self._set_combo_casefold(self.surface_type, legacy_surface)
+        constraints = parameters.get("constraints", {})
+        constraints = constraints if isinstance(constraints, dict) else {}
+        self.guided_advanced_group.setChecked(bool(constraints))
+        if constraints:
+            for key, widget in self.advanced_fields.items():
+                set_widget(widget, constraints.get(key))
 
     # Calculation lifecycle ----------------------------------------------
     def _make_ai_service(self):
