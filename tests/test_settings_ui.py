@@ -6,7 +6,7 @@ import pytest
 from PySide6.QtCore import QElapsedTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QDialog, QLabel
 
 from src.cutdata_ai.database.database import Database
 from src.cutdata_ai.services.openai_service import MockOpenAIService, OpenAIService
@@ -21,6 +21,7 @@ from src.cutdata_ai.config.constants import (
     SUPPORTED_MODELS,
     SUPPORTED_REASONING_EFFORTS,
     WINDOWS_ICON_PATH,
+    model_display_name,
 )
 from src.cutdata_ai.services.normalization import normalize_request, request_hash
 from src.cutdata_ai.ui.dialogs import AboutDialog, ConnectionTestWorker, SettingsDialog
@@ -77,9 +78,14 @@ def test_settings_dialog_model_and_reasoning_choices_show_friendly_labels(qapp, 
     try:
         assert [dialog.model.itemData(i) for i in range(dialog.model.count())] == list(SUPPORTED_MODELS)
         assert [dialog.model.itemText(i) for i in range(dialog.model.count())] == [
-            "GPT-6 Luna", "GPT-6 Sol", "GPT-6 Astra"
+            "GPT-6.1 Sol", "GPT-6 Luna", "GPT-6 Sol", "GPT-6 Astra"
         ]
         assert dialog.model.currentData() == DEFAULT_MODEL
+        assert "Current saved model: GPT-6.1 Sol" in dialog.model_selection_notice.text()
+        assert dialog.save_restart_button.text() == "SAVE & RESTART APP"
+        dialog.model.setCurrentIndex(dialog.model.findData("gpt-6-astra"))
+        assert "Selected GPT-6 Astra" in dialog.model_selection_notice.text()
+        assert "not active yet" in dialog.model_selection_notice.text()
         assert [dialog.reasoning.itemData(i) for i in range(dialog.reasoning.count())] == list(
             SUPPORTED_REASONING_EFFORTS
         )
@@ -87,7 +93,22 @@ def test_settings_dialog_model_and_reasoning_choices_show_friendly_labels(qapp, 
             REASONING_EFFORT_DISPLAY_NAMES[value] for value in SUPPORTED_REASONING_EFFORTS
         ]
         assert dialog.reasoning.currentData() == "medium"
-        assert "Efficient for focused, high-volume work" in dialog.findChild(QLabel, "modelRoleHint").text()
+        assert "Default engine for careful tool research" in dialog.findChild(QLabel, "modelRoleHint").text()
+    finally:
+        close_widget(dialog, qapp)
+
+
+def test_save_and_restart_persists_selected_model_and_requests_restart(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / "save-restart.sqlite3")
+    dialog = SettingsDialog(database, SettingsService(database).load())
+    try:
+        dialog.model.setCurrentIndex(dialog.model.findData("gpt-6-astra"))
+        assert database.get_setting("model") is None
+        dialog.save_restart_button.click()
+        assert dialog.result() == QDialog.Accepted
+        assert dialog.restart_requested is True
+        assert SettingsService(database).load().model == "gpt-6-astra"
     finally:
         close_widget(dialog, qapp)
 
@@ -255,7 +276,7 @@ def test_main_window_status_recognises_saved_key_and_service(qapp, tmp_path, mon
     window = MainWindow(database)
 
     try:
-        assert window.status_badge.text() == "LIVE AI · LUNA · SAVED KEY"
+        assert window.status_badge.text() == "LIVE AI · GPT-6.1 SOL · SAVED KEY"
         assert isinstance(window.ai_service, OpenAIService)
     finally:
         close_widget(window, qapp)
@@ -273,6 +294,7 @@ def test_live_mode_without_key_stays_live_and_shows_settings_route(qapp, tmp_pat
         assert "LIVE AI MODE" in window.api_status_notice.text()
         assert "Open Settings" in window.api_status_notice.text()
         assert window.settings.mock_mode is False
+        assert window.selected_model_label.text() == "MODEL: GPT-6.1 SOL"
     finally:
         close_widget(window, qapp)
 
@@ -307,7 +329,51 @@ def test_settings_reload_rebuilds_active_service_without_restart(qapp, tmp_path,
         database.set_setting("mock_mode", "0")
         window._reload_settings()
         assert isinstance(window.ai_service, OpenAIService)
-        assert window.status_badge.text() == "LIVE AI · LUNA · SAVED KEY"
+        assert window.status_badge.text() == "LIVE AI · GPT-6.1 SOL · SAVED KEY"
+    finally:
+        close_widget(window, qapp)
+
+
+def test_model_change_offers_a_visible_optional_restart(qapp, tmp_path, monkeypatch):
+    database = Database(tmp_path / "model-restart-prompt.sqlite3")
+    window = MainWindow(database)
+    window.show()
+    qapp.processEvents()
+
+    def save_selected_model(dialog):
+        dialog.model.setCurrentIndex(dialog.model.findData("gpt-6-astra"))
+        dialog._save()
+        return dialog.result()
+
+    monkeypatch.setattr(SettingsDialog, "exec", save_selected_model)
+    try:
+        window._open_settings()
+        assert window.settings.model == "gpt-6-astra"
+        assert window.ai_service.model == "gpt-6-astra"
+        assert window.restart_app_button.isVisible()
+        assert "GPT-6 Astra" in window.model_change_notice.text()
+        assert "use it now" in window.model_change_notice.text()
+        assert window.selected_model_label.text() == "MODEL: GPT-6 ASTRA"
+    finally:
+        close_widget(window, qapp)
+
+
+def test_save_and_restart_button_reaches_app_restart(qapp, tmp_path, monkeypatch):
+    database = Database(tmp_path / "restart-route.sqlite3")
+    window = MainWindow(database)
+    restarted = []
+
+    def save_and_restart(dialog):
+        dialog.model.setCurrentIndex(dialog.model.findData("gpt-6-astra"))
+        dialog.save_restart_button.click()
+        return dialog.result()
+
+    monkeypatch.setattr(SettingsDialog, "exec", save_and_restart)
+    monkeypatch.setattr(window, "_restart_app", lambda: restarted.append(True))
+    try:
+        window._open_settings()
+        assert restarted == [True]
+        assert window.settings.model == "gpt-6-astra"
     finally:
         close_widget(window, qapp)
 
@@ -315,9 +381,10 @@ def test_settings_reload_rebuilds_active_service_without_restart(qapp, tmp_path,
 @pytest.mark.parametrize(
     ("model", "status"),
     [
-        ("gpt-6-luna", "LIVE AI · LUNA · SAVED KEY"),
-        ("gpt-6-sol", "LIVE AI · SOL · SAVED KEY"),
-        ("gpt-6-astra", "LIVE AI · ASTRA · SAVED KEY"),
+        ("gpt-6.1-sol", "LIVE AI · GPT-6.1 SOL · SAVED KEY"),
+        ("gpt-6-luna", "LIVE AI · GPT-6 LUNA · SAVED KEY"),
+        ("gpt-6-sol", "LIVE AI · GPT-6 SOL · SAVED KEY"),
+        ("gpt-6-astra", "LIVE AI · GPT-6 ASTRA · SAVED KEY"),
     ],
 )
 def test_status_badge_names_every_current_model(model, status, qapp, tmp_path, monkeypatch):
@@ -335,6 +402,7 @@ def test_status_badge_names_every_current_model(model, status, qapp, tmp_path, m
         window._api_error = False
         window._update_status()
         assert window.status_badge.text() == status
+        assert model_display_name(model).upper() in window.selected_model_label.text()
     finally:
         close_widget(window, qapp)
 
@@ -387,6 +455,7 @@ def test_calculator_state_persists_global_and_family_values_without_changing_req
     database = Database(tmp_path / "calculator-state.sqlite3")
     first = MainWindow(database)
     try:
+        first.workflow_combo.setCurrentIndex(1)
         first.machine_combo.setCurrentText("HAAS VF-9")
         first.material_combo.setCurrentText("304 Stainless")
         first.custom_material.setText("")
@@ -401,14 +470,21 @@ def test_calculator_state_persists_global_and_family_values_without_changing_req
         first.settings.model = "gpt-6-sol"
         first.settings.reasoning_effort = "high"
         first.settings.mock_mode = True
+        first.settings_service.save(first.settings)
         first._save_calculator_state()
         saved_request = first._collect_request()
         saved_hash = request_hash(normalize_request(saved_request))
     finally:
         close_widget(first, qapp)
 
+    state_service = SettingsService(database)
+    legacy_state = state_service.load_json_setting("last_calculator_state")
+    legacy_state["global"].update(model="gpt-6-luna", reasoning_effort="low", mock_mode=False)
+    state_service.save_json_setting("last_calculator_state", legacy_state)
+
     second = MainWindow(database)
     try:
+        assert second.workflow_mode == "manual"
         assert second.machine_combo.currentText() == "HAAS VF-9"
         assert second.material_combo.currentText() == "304 Stainless"
         assert second.tool_combo.currentText() == "End Mill"
@@ -421,9 +497,26 @@ def test_calculator_state_persists_global_and_family_values_without_changing_req
         assert second.settings.model == "gpt-6-sol"
         assert second.settings.reasoning_effort == "high"
         assert second.settings.mock_mode is True
+        assert second.ai_service.model == "gpt-6-sol"
         assert request_hash(normalize_request(second._collect_request())) == saved_hash
     finally:
         close_widget(second, qapp)
+
+
+def test_old_calculator_snapshot_cannot_undo_default_model_migration(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    database = Database(tmp_path / "stale-calculator-model.sqlite3")
+    database.set_setting("model", "gpt-6-luna")
+    SettingsService(database).save_json_setting("last_calculator_state", {
+        "global": {"model": "gpt-6-luna", "reasoning_effort": "low", "mock_mode": False},
+    })
+    window = MainWindow(database)
+    try:
+        assert window.settings.model == "gpt-6.1-sol"
+        assert window.ai_service.model == "gpt-6.1-sol"
+        assert database.get_setting("model") == "gpt-6.1-sol"
+    finally:
+        close_widget(window, qapp)
 
 
 def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_path, monkeypatch):
@@ -435,7 +528,7 @@ def test_window_state_is_defensive_and_about_dialog_has_ppt_identity(qapp, tmp_p
     try:
         text = dialog.details.text()
         assert "PPT" in text
-        assert "Default engine: GPT-6 Luna" in text
+        assert "Default engine: GPT-6.1 Sol" in text
         assert "CutData AI" in dialog.windowTitle()
         assert COMPANY_NAME in text
         assert dialog.findChild(QLabel, "dialogIdentityVersion").text() == f"Version {APP_VERSION}"

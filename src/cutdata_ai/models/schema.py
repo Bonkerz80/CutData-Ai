@@ -43,6 +43,31 @@ MACHINING_RESULT_SCHEMA: dict[str, Any] = {
             "description": "Optional AI setup-risk assessment: low, medium, or high.",
         },
         "recommendation_summary": {"type": ["string", "null"], "description": "Optional concise AI summary of the recommendation."},
+        "recommended_operation": {"type": ["string", "null"], "description": "Recommended ENCY-style operation selected by the AI, especially for AI-guided jobs."},
+        "recommended_strategy": {"type": ["string", "null"], "description": "Short practical machining strategy."},
+        "recommended_entry_method": {"type": ["string", "null"], "description": "Recommended approach, plunge or ramp method where relevant."},
+        "recommended_finish_allowance_mm": {"type": ["number", "null"], "description": "AI-selected finish allowance in mm."},
+        "recommended_pass_count": {"type": ["integer", "null"], "description": "AI-selected number of passes, when meaningful."},
+        "pass_plan": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "stage": {"type": "string"},
+                    "passes": {"type": ["integer", "null"]},
+                    "operation": {"type": ["string", "null"]},
+                    "axial_doc_mm": {"type": ["number", "null"]},
+                    "radial_engagement_mm": {"type": ["number", "null"]},
+                    "stepover_mm": {"type": ["number", "null"]},
+                    "stock_to_leave_mm": {"type": ["number", "null"]},
+                    "rpm": {"type": ["number", "null"]},
+                    "feed_mm_min": {"type": ["number", "null"]},
+                    "notes": {"type": "string"},
+                },
+                "required": ["stage", "passes", "operation", "axial_doc_mm", "radial_engagement_mm", "stepover_mm", "stock_to_leave_mm", "rpm", "feed_mm_min", "notes"],
+            },
+        },
         "coolant": {"type": "string"},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "notes": {"type": "array", "items": {"type": "string"}},
@@ -72,6 +97,12 @@ MACHINING_RESULT_SCHEMA: dict[str, Any] = {
         "engagement_description",
         "setup_risk",
         "recommendation_summary",
+        "recommended_operation",
+        "recommended_strategy",
+        "recommended_entry_method",
+        "recommended_finish_allowance_mm",
+        "recommended_pass_count",
+        "pass_plan",
         "coolant",
         "confidence",
         "notes",
@@ -154,6 +185,7 @@ def result_from_dict(payload: dict[str, Any]) -> MachiningResult:
         "tap_drill_mm",
         "estimated_spindle_power_kw",
         "estimated_spindle_torque_nm",
+        "recommended_finish_allowance_mm",
     )
     converted = {name: _number(payload.get(name), name) for name in numeric_fields}
     for name, value in converted.items():
@@ -182,6 +214,74 @@ def result_from_dict(payload: dict[str, Any]) -> MachiningResult:
     if not isinstance(coolant, str):
         raise StructuredResponseError("Structured response field 'coolant' must be a string")
 
+    research_sources = payload.get("research_sources", [])
+    if not isinstance(research_sources, list):
+        research_sources = []
+    clean_sources: list[dict[str, str]] = []
+    for source in research_sources:
+        if not isinstance(source, dict):
+            continue
+        url = source.get("url")
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            continue
+        title = source.get("title", "")
+        clean_sources.append({"title": title if isinstance(title, str) else "", "url": url})
+
+    def string_list(field_name: str) -> list[str]:
+        value = payload.get(field_name, [])
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str)]
+
+    research_status = payload.get("research_status", "not_run")
+    if research_status not in {"not_run", "not_applicable", "searched", "no_sources", "not_used", "unavailable"}:
+        research_status = "not_run"
+    verification_status = payload.get("verification_status", "not_run")
+    if verification_status not in {"not_run", "cross_checked", "review_required", "check_incomplete"}:
+        verification_status = "not_run"
+    verification_summary = payload.get("verification_summary", "")
+    if not isinstance(verification_summary, str):
+        verification_summary = ""
+    verification_response_id = payload.get("verification_response_id", "")
+    if not isinstance(verification_response_id, str):
+        verification_response_id = ""
+
+    string_fields = ("recommended_operation", "recommended_strategy", "recommended_entry_method")
+    optional_text: dict[str, str | None] = dict(optional_text)
+    for field_name in string_fields:
+        value = payload.get(field_name)
+        if value is not None and not isinstance(value, str):
+            raise StructuredResponseError(f"Structured response field '{field_name}' must be string or null")
+        optional_text[field_name] = value
+    pass_count = payload.get("recommended_pass_count")
+    if pass_count is not None and (isinstance(pass_count, bool) or not isinstance(pass_count, int) or pass_count < 1):
+        raise StructuredResponseError("Structured response field 'recommended_pass_count' must be a positive integer or null")
+    pass_plan = payload.get("pass_plan", [])
+    if not isinstance(pass_plan, list):
+        raise StructuredResponseError("Structured response field 'pass_plan' must be a list")
+    clean_plan: list[dict[str, Any]] = []
+    for index, stage in enumerate(pass_plan):
+        if not isinstance(stage, dict) or not isinstance(stage.get("stage"), str):
+            raise StructuredResponseError(f"Pass plan stage {index + 1} must be an object with a stage name")
+        clean = dict(stage)
+        stage_passes = clean.get("passes")
+        if stage_passes is not None and (isinstance(stage_passes, bool) or not isinstance(stage_passes, int) or stage_passes < 1):
+            raise StructuredResponseError(f"Pass plan stage {index + 1} 'passes' must be a positive integer or null")
+        clean["passes"] = stage_passes
+        for field_name in ("operation", "notes"):
+            if clean.get(field_name) is not None and not isinstance(clean[field_name], str):
+                raise StructuredResponseError(f"Pass plan stage {index + 1} '{field_name}' must be text")
+        for field_name in ("axial_doc_mm", "radial_engagement_mm", "stepover_mm", "stock_to_leave_mm", "rpm", "feed_mm_min"):
+            if field_name not in clean:
+                clean[field_name] = None if field_name != "notes" else ""
+            number = _number(clean[field_name], f"pass_plan[{index}].{field_name}")
+            if number is not None and number < 0:
+                raise StructuredResponseError(f"Pass plan stage {index + 1} '{field_name}' cannot be negative")
+            clean[field_name] = number
+        clean.setdefault("operation", None)
+        clean.setdefault("notes", "")
+        clean_plan.append(clean)
+
     result = MachiningResult(
         rpm=rpm,
         feed_mm_min=feed,
@@ -192,10 +292,22 @@ def result_from_dict(payload: dict[str, Any]) -> MachiningResult:
         engagement_description=optional_text["engagement_description"],
         setup_risk=setup_risk,
         recommendation_summary=optional_text["recommendation_summary"],
+        recommended_operation=optional_text["recommended_operation"],
+        recommended_strategy=optional_text["recommended_strategy"],
+        recommended_entry_method=optional_text["recommended_entry_method"],
+        recommended_pass_count=pass_count,
+        pass_plan=clean_plan,
         coolant=coolant,
         confidence=confidence,
         notes=notes,
         warnings=warnings,
+        research_status=research_status,
+        research_sources=clean_sources,
+        verification_status=verification_status,
+        verification_summary=verification_summary,
+        verification_findings=string_list("verification_findings"),
+        history_comparison=string_list("history_comparison"),
+        verification_response_id=verification_response_id,
     )
     return result
 

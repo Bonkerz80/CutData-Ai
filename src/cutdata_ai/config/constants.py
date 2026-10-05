@@ -30,13 +30,14 @@ from .branding import (
 )
 
 
-APP_VERSION = "0.1.13"
-PROMPT_VERSION = "2026-09-07.3"
-SCHEMA_VERSION = "2"
-DEFAULT_MODEL = "gpt-6-luna"
+APP_VERSION = "0.2.3"
+PROMPT_VERSION = "2026-09-28.1"
+SCHEMA_VERSION = "3"
+DEFAULT_MODEL = "gpt-6.1-sol"
 DEFAULT_REASONING_EFFORT = "medium"
 
 MODEL_DISPLAY_NAMES = {
+    "gpt-6.1-sol": "GPT-6.1 Sol",
     "gpt-6-luna": "GPT-6 Luna",
     "gpt-6-sol": "GPT-6 Sol",
     "gpt-6-astra": "GPT-6 Astra",
@@ -50,13 +51,15 @@ HISTORICAL_MODEL_DISPLAY_NAMES = {
 }
 
 SUPPORTED_MODELS = (
+    "gpt-6.1-sol",
     "gpt-6-luna",
     "gpt-6-sol",
     "gpt-6-astra",
 )
 
 MODEL_DESCRIPTIONS = {
-    "gpt-6-luna": "Efficient for focused, high-volume work. Default engine.",
+    "gpt-6.1-sol": "Default engine for careful tool research and machining advice.",
+    "gpt-6-luna": "Efficient for focused, high-volume work.",
     "gpt-6-sol": "Higher-capability reasoning for demanding work.",
     "gpt-6-astra": "Highest-capability model for the hardest work.",
 }
@@ -159,6 +162,7 @@ TOOL_TYPES = (
     "Bull Nose / Corner Radius End Mill",
     "Face Mill",
     "Indexable End Mill",
+    "Round Insert / Bull Cutter",
     "Reamer",
     "Tap",
     "Thread Mill",
@@ -171,7 +175,8 @@ TOOL_FAMILY_BY_TYPE = {
     "Drill": "drill",
     "Spot Drill / Centre Drill": "drill",
     "Countersink": "drill",
-    "Chamfer Mill": "drill",
+    "Chamfer Mill": "end_mill",
+    "Chamfer Tool": "end_mill",
     "Reamer": "reamer",
     "Tap": "tap",
     "End Mill": "end_mill",
@@ -180,6 +185,7 @@ TOOL_FAMILY_BY_TYPE = {
     "Thread Mill": "end_mill",
     "Face Mill": "indexable",
     "Indexable End Mill": "indexable",
+    "Round Insert / Bull Cutter": "indexable",
 }
 
 # These labels are retained only for reading older calculator state and

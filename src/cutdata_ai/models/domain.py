@@ -36,9 +36,12 @@ class MachiningRequest:
     custom_material: str = ""
     hardness_hrc: float | None = None
     unit_system: str = "metric"
+    workflow_mode: str = "manual"
+    tool_snapshot: dict[str, Any] = field(default_factory=dict)
+    comparison_history: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "machine": self.machine,
             "material": self.material,
             "custom_material": self.custom_material,
@@ -47,7 +50,12 @@ class MachiningRequest:
             "operation": self.operation,
             "parameters": self.parameters,
             "unit_system": self.unit_system,
+            "workflow_mode": self.workflow_mode,
+            "tool_snapshot": self.tool_snapshot,
         }
+        if self.comparison_history:
+            value["comparison_history"] = self.comparison_history
+        return value
 
 
 @dataclass
@@ -77,16 +85,37 @@ class MachiningResult:
     engagement_description: str | None = None
     setup_risk: str | None = None
     recommendation_summary: str | None = None
+    recommended_operation: str | None = None
+    recommended_strategy: str | None = None
+    recommended_entry_method: str | None = None
+    recommended_finish_allowance_mm: float | None = None
+    recommended_pass_count: int | None = None
+    pass_plan: list[dict[str, Any]] = field(default_factory=list)
     coolant: str = ""
     confidence: str = "medium"
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    research_status: str = "not_run"
+    research_sources: list[dict[str, str]] = field(default_factory=list)
+    verification_status: str = "not_run"
+    verification_summary: str = ""
+    verification_findings: list[str] = field(default_factory=list)
+    history_comparison: list[str] = field(default_factory=list)
+    verification_response_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def copy(self) -> "MachiningResult":
-        return replace(self, notes=list(self.notes), warnings=list(self.warnings))
+        return replace(
+            self,
+            notes=list(self.notes),
+            warnings=list(self.warnings),
+            pass_plan=[dict(stage) for stage in self.pass_plan],
+            research_sources=[dict(source) for source in self.research_sources],
+            verification_findings=list(self.verification_findings),
+            history_comparison=list(self.history_comparison),
+        )
 
 
 @dataclass
@@ -105,3 +134,5 @@ class CalculationOutcome:
     response_id: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     validation_corrections: list[str] = field(default_factory=list)
+    verification_prompt: str = ""
+    verification_raw_response: str = ""

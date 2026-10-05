@@ -27,6 +27,7 @@ from tests.test_cache import CountingAI
 def window(tmp_path):
     app = QApplication.instance() or QApplication([])
     window = MainWindow(Database(tmp_path / "correction.sqlite3"))
+    window.workflow_combo.setCurrentIndex(1)
     yield window
     window.close()
     window.deleteLater()
@@ -101,10 +102,10 @@ def test_thread_mill_operation_names_are_current_but_end_mill_names_are_legacy(w
 
 def test_thread_mill_prompt_version_and_schema_contract():
     from src.cutdata_ai.prompts.machining import SYSTEM_PROMPT
-    assert PROMPT_VERSION == "2026-09-07.3"
-    assert SCHEMA_VERSION == "2"
-    assert "current Thread Mill" in SYSTEM_PROMPT
-    assert "do not treat them as legacy" in SYSTEM_PROMPT
+    assert PROMPT_VERSION == "2026-09-28.1"
+    assert SCHEMA_VERSION == "3"
+    assert "Thread Mill, existing strategy\n  labels remain valid current context" in SYSTEM_PROMPT
+    assert "In workflow_mode=guided" in SYSTEM_PROMPT
 
 
 def test_thread_mill_request_excludes_hidden_fields_but_keeps_visible_inputs(window):

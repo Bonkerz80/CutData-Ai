@@ -196,6 +196,8 @@ class SettingsDialog(QDialog):
         self._original_appearance = normalise_appearance(settings.appearance)
         self._theme_saved = False
         self._clear_requested = False
+        self.restart_requested = False
+        self._saved_model = normalise_model_preference(settings.model)
         self._connection_thread: QThread | None = None
         self._connection_worker: ConnectionTestWorker | None = None
         self.setWindowTitle("Settings")
@@ -272,6 +274,19 @@ class SettingsDialog(QDialog):
         engine_form.addRow("Model", self.model)
         engine_form.addRow("Reasoning", self.reasoning)
         api_layout.addLayout(engine_form)
+        reasoning_hint = QLabel(
+            "Maximum reasoning can take much longer. Medium is the default; "
+            "AI Guided runs research and then an independent check."
+        )
+        reasoning_hint.setObjectName("hint")
+        reasoning_hint.setWordWrap(True)
+        api_layout.addWidget(reasoning_hint)
+        self.model_selection_notice = QLabel()
+        self.model_selection_notice.setObjectName("modelSelectionNotice")
+        self.model_selection_notice.setWordWrap(True)
+        api_layout.addWidget(self.model_selection_notice)
+        self.model.currentIndexChanged.connect(self._model_selection_changed)
+        self._model_selection_changed()
         model_help = QLabel(
             "Model roles: "
             + "  •  ".join(
@@ -380,9 +395,27 @@ class SettingsDialog(QDialog):
 
         self.dialog_buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.dialog_buttons.button(QDialogButtonBox.Save).setText("SAVE SETTINGS")
+        self.save_restart_button = QPushButton("SAVE & RESTART APP")
+        self.dialog_buttons.addButton(self.save_restart_button, QDialogButtonBox.ActionRole)
+        self.save_restart_button.clicked.connect(self._save_and_restart)
         self.dialog_buttons.accepted.connect(self._save)
         self.dialog_buttons.rejected.connect(self._cancel)
         layout.addWidget(self.dialog_buttons)
+
+    def _model_selection_changed(self, _index: int = -1) -> None:
+        selected = self.model.currentData() or DEFAULT_MODEL
+        name = model_display_name(selected)
+        if selected == self._saved_model:
+            self.model_selection_notice.setText(f"Current saved model: {name}. New calculations use this model in Live AI mode.")
+        else:
+            self.model_selection_notice.setText(
+                f"Selected {name}. This change is not active yet — choose SAVE SETTINGS or SAVE & RESTART APP."
+            )
+
+    def _save_and_restart(self) -> None:
+        self._save()
+        if self.result() == QDialog.Accepted:
+            self.restart_requested = True
 
     def _preview_appearance(self, _dark: bool) -> None:
         self.settings.appearance = self.appearance_switch.appearance

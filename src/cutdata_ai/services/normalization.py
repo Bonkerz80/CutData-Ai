@@ -45,7 +45,32 @@ def canonical_json(value: dict[str, Any]) -> str:
 
 
 def request_hash(normalized_request: dict[str, Any]) -> str:
-    return hashlib.sha256(canonical_json(normalized_request).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_json(_machining_identity(normalized_request)).encode("utf-8")).hexdigest()
+
+
+def _machining_identity(normalized_request: dict[str, Any]) -> dict[str, Any]:
+    """Drop library labels/revisions while retaining facts used for advice."""
+    value = json.loads(canonical_json(normalized_request))
+    # Comparison history changes the model's context, not the physical job's
+    # identity (or any saved workshop preference keyed to that job).
+    value.pop("comparison_history", None)
+    snapshot = value.get("tool_snapshot")
+    if isinstance(snapshot, dict):
+        for key in ("display_name", "library_id", "revision", "seed_key", "created_at", "updated_at", "user_modified"):
+            snapshot.pop(key, None)
+        _drop_display_name_provenance(snapshot)
+        insert = snapshot.get("insert")
+        if isinstance(insert, dict):
+            for key in ("display_name", "library_id", "revision", "seed_key", "created_at", "updated_at", "user_modified"):
+                insert.pop(key, None)
+            _drop_display_name_provenance(insert)
+    return value
+
+
+def _drop_display_name_provenance(record: dict[str, Any]) -> None:
+    provenance = record.get("field_provenance")
+    if isinstance(provenance, dict):
+        provenance.pop("display_name", None)
 
 
 def model_cache_identity(
@@ -61,7 +86,8 @@ def model_cache_identity(
     """
 
     identity = {
-        "machining_request": normalized_request,
+        "machining_request": _machining_identity(normalized_request),
+        "comparison_history": normalized_request.get("comparison_history", []),
         "model": str(model),
         "prompt_version": str(prompt_version),
         "schema_version": str(schema_version),

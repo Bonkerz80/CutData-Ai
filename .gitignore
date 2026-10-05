@@ -11,3 +11,5 @@ installer/
 !CutData AI.spec
 *.sqlite3
 *.sqlite3-*
+.pytest-tmp*/
+.pytest_tmp*/

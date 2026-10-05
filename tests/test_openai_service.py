@@ -1,11 +1,12 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from src.cutdata_ai.models.domain import MachiningRequest, MachineProfile
 from src.cutdata_ai.models.schema import MACHINING_RESULT_SCHEMA
 from src.cutdata_ai.database.database import Database
-from src.cutdata_ai.services.openai_service import OpenAIService, connection_result_for_exception
+from src.cutdata_ai.services.openai_service import OpenAIService, OpenAIServiceError, connection_result_for_exception
 
 
 class FakeResponses:
@@ -23,6 +24,28 @@ class FakeClient:
         self.responses = FakeResponses()
 
 
+def test_live_client_has_one_bounded_attempt_per_ai_stage(monkeypatch):
+    import openai
+
+    options = {}
+    monkeypatch.setattr(openai, "OpenAI", lambda **kwargs: options.update(kwargs) or FakeClient())
+    OpenAIService("test-key")
+    assert options["timeout"] == 90.0
+    assert options["max_retries"] == 0
+
+
+def test_ai_timeout_has_clear_non_secret_error():
+    class TimedOutResponses:
+        def create(self, **kwargs):
+            raise TimeoutError("secret transport detail")
+
+    service = OpenAIService("test-key", client=type("Client", (), {"responses": TimedOutResponses()})())
+    request = MachiningRequest("Test machine", "Mild Steel", "Drill", "Drilling", {"diameter_mm": 10})
+    with pytest.raises(OpenAIServiceError, match="AI research timed out after 90 seconds") as exc:
+        service.calculate(request, MachineProfile("Test machine", 10000, 5000))
+    assert "secret" not in str(exc.value)
+
+
 def test_responses_api_uses_strict_json_schema_and_reasoning():
     client = FakeClient()
     service = OpenAIService("test-key", "gpt-6-luna", "medium", client=client)
@@ -30,6 +53,7 @@ def test_responses_api_uses_strict_json_schema_and_reasoning():
     machine = MachineProfile("Test machine", 10000, 5000)
     response = service.calculate(request, machine)
     assert response.payload["rpm"] == 1000
+    assert response.usage["research_elapsed_seconds"] >= 0
     assert client.responses.kwargs["model"] == "gpt-6-luna"
     assert client.responses.kwargs["reasoning"] == {"effort": "medium"}
     format_spec = client.responses.kwargs["text"]["format"]
@@ -37,17 +61,13 @@ def test_responses_api_uses_strict_json_schema_and_reasoning():
     assert format_spec["strict"] is True
     assert format_spec["schema"] == MACHINING_RESULT_SCHEMA
     instructions = client.responses.kwargs["input"][0]["content"][0]["text"]
-    assert "peck_recommended must be true or false, never null" in instructions
-    assert "Roughing\n  Waterline is Z-level/material-removal roughing" in instructions
-    assert "Flat\n  Land Finishing is for horizontal flats or lands" in instructions
-    assert "positive finite Q increment" in instructions
-    assert "peck_mm MUST be null" in instructions
-    assert "Never return a Q value with a false no-peck decision" in instructions
-    assert "recommended_cycle" in instructions
-    assert "For every Reamer request" in instructions
-    assert "peck_recommended to false" in instructions
-    assert "never request a\n  drilling-style peck" in instructions
-    assert "drilling-family" not in instructions
+    assert "For Drill, make an explicit peck decision" in instructions
+    assert "Roughing Waterline for Z-level\n  material-removal roughing" in instructions
+    assert "Flat Land Finishing for horizontal flats/lands" in instructions
+    assert "true requires a\n  positive Q depth and false requires null" in instructions
+    assert "For Reamer, use continuous feed" in instructions
+    assert "no drilling cycle/G83" in instructions
+    assert "Thread Mill, existing strategy\n  labels remain valid current context" in instructions
 
 
 @pytest.mark.parametrize(
@@ -161,3 +181,123 @@ def test_supported_reasoning_efforts_reach_the_responses_api(model, effort):
 
     assert client.responses.kwargs["model"] == model
     assert client.responses.kwargs["reasoning"] == {"effort": effort}
+
+
+def test_guided_request_enables_live_search_and_extracts_sources():
+    payload = {"rpm": 1500, "feed_mm_min": 200, "notes": [], "warnings": []}
+
+    class SearchResponses:
+        def __init__(self):
+            self.kwargs = None
+
+        def create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                output_text=json.dumps(payload),
+                id="guided-response",
+                usage={"input_tokens": 20},
+                output=[{
+                    "type": "web_search_call",
+                    "action": {"sources": [{"title": "Manufacturer data", "url": "https://example.com/cutter"}]},
+                }],
+            )
+
+    responses = SearchResponses()
+    request = MachiningRequest(
+        "Test machine", "Mild Steel", "Indexable End Mill", "AI Guided",
+        {"diameter_mm": 25, "insert_count": 2}, workflow_mode="guided",
+    )
+    result = OpenAIService("test-key", client=type("Client", (), {"responses": responses})()).calculate(
+        request, MachineProfile("Test machine", 10000, 5000)
+    )
+
+    assert responses.kwargs["tools"] == [{"type": "web_search", "search_context_size": "high"}]
+    assert responses.kwargs["max_tool_calls"] == 4
+    assert responses.kwargs["include"] == ["web_search_call.action.sources"]
+    assert result.research_status == "searched"
+    assert result.research_sources == [{"title": "Manufacturer data", "url": "https://example.com/cutter"}]
+
+
+def test_guided_search_rejection_retries_without_search_and_marks_unavailable():
+    class UnsupportedSearch(Exception):
+        status_code = 400
+
+    class FallbackResponses:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise UnsupportedSearch("provider does not support web search")
+            return type("Response", (), {
+                "output_text": json.dumps({"rpm": 1200, "feed_mm_min": 100, "notes": [], "warnings": []}),
+                "id": "fallback-response",
+                "usage": {},
+                "output": [],
+            })()
+
+    responses = FallbackResponses()
+    request = MachiningRequest(
+        "Test machine", "Mild Steel", "Indexable End Mill", "AI Guided",
+        {"diameter_mm": 25, "insert_count": 2}, workflow_mode="guided",
+    )
+    result = OpenAIService("test-key", client=type("Client", (), {"responses": responses})()).calculate(
+        request, MachineProfile("Test machine", 10000, 5000)
+    )
+
+    assert len(responses.calls) == 2
+    assert "tools" in responses.calls[0]
+    assert "tools" not in responses.calls[1]
+    assert result.research_status == "unavailable"
+    assert result.usage["web_search_error"] == "UnsupportedSearch (HTTP 400)"
+
+
+def test_verifier_uses_high_reasoning_strict_schema_and_live_search():
+    review_payload = {
+        "status": "consistent",
+        "history_change_assessment": "not_applicable",
+        "history_change_reason": "No large changes from nearby history were detected.",
+        "summary": "Arithmetic and machine limits check out.",
+        "findings": [],
+    }
+
+    class ReviewResponses:
+        def __init__(self):
+            self.kwargs = None
+
+        def create(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                output_text=json.dumps(review_payload),
+                id="review-response",
+                usage={"output_tokens": 15},
+                output=[{
+                    "type": "web_search_call",
+                    "action": {"sources": [{"title": "Insert catalog", "url": "https://example.com/insert"}]},
+                }],
+            )
+
+    responses = ReviewResponses()
+    service = OpenAIService("test-key", client=type("Client", (), {"responses": responses})())
+    result = service.verify(
+        MachiningRequest(
+            "Test machine", "Mild Steel", "Indexable End Mill", "AI Guided",
+            {"diameter_mm": 25, "insert_count": 2}, workflow_mode="guided",
+        ),
+        MachineProfile("Test machine", 10000, 5000),
+        {"rpm": 1500, "feed_mm_min": 210},
+        continuity_findings=[],
+        validation_corrections=[],
+        research_sources=[],
+    )
+
+    assert responses.kwargs["reasoning"] == {"effort": "high"}
+    assert responses.kwargs["tools"] == [{"type": "web_search", "search_context_size": "high"}]
+    assert responses.kwargs["text"]["format"]["strict"] is True
+    assert responses.kwargs["text"]["format"]["schema"]["properties"]["status"]["enum"] == [
+        "consistent", "review_required", "cannot_verify",
+    ]
+    assert result.research_status == "searched"
+    assert result.research_sources[0]["url"] == "https://example.com/insert"
+    assert result.usage["check_elapsed_seconds"] >= 0

@@ -88,4 +88,4 @@ def test_coating_is_part_of_exact_request_identity_and_prompt_version():
     second = MachiningRequest("Generic CNC Mill", "Mild Steel", "Drill", "Drilling", {"diameter_mm": 10, "coating": "Cupro (ITC)"})
 
     assert request_hash(normalize_request(first)) != request_hash(normalize_request(second))
-    assert PROMPT_VERSION == "2026-09-07.3"
+    assert PROMPT_VERSION == "2026-09-28.1"

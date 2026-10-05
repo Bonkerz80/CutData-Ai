@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from ..config.constants import tool_family
 from ..config.operations import active_parameters, legacy_operation_warning
@@ -13,8 +13,9 @@ from ..database.database import Database
 from ..models.domain import CalculationOutcome, MachiningRequest, MachiningResult, MachineProfile
 from ..models.schema import StructuredResponseError, result_from_dict, result_from_json, validate_drilling_peck
 from ..prompts.machining import build_user_prompt
+from .calculation_history import related_calculation_history, small_depth_change_findings
 from .normalization import model_cache_identity, normalize_request, request_hash
-from .openai_service import ServiceResponse
+from .openai_service import OpenAIServiceError, ServiceResponse
 
 
 class CalculationInputError(ValueError):
@@ -45,6 +46,44 @@ def tapping_feed_mm_min(rpm: float, pitch_mm: float) -> float:
     return rpm * pitch_mm
 
 
+def _merge_research_sources(*collections: list[dict[str, str]]) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    positions: dict[str, int] = {}
+    for sources in collections:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            url = str(source.get("url", "")).strip()
+            if not url.startswith(("https://", "http://")):
+                continue
+            key = url.casefold()
+            title = str(source.get("title", "")).strip()
+            if key in positions:
+                existing = merged[positions[key]]
+                if title and not existing.get("title"):
+                    existing["title"] = title
+                continue
+            positions[key] = len(merged)
+            merged.append({"title": title, "url": url})
+            if len(merged) >= 12:
+                return merged
+    return merged
+
+
+def _combine_usage(primary: dict[str, Any], reviewer: dict[str, Any]) -> dict[str, Any]:
+    combined = dict(primary)
+    if not reviewer:
+        return combined
+    combined["primary_call"] = dict(primary)
+    combined["independent_check"] = dict(reviewer)
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        values = [value.get(key) for value in (primary, reviewer)]
+        numeric = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+        if numeric:
+            combined[key] = sum(numeric)
+    return combined
+
+
 def _number(parameters: dict[str, Any], *names: str) -> float | None:
     for name in names:
         value = parameters.get(name)
@@ -62,7 +101,8 @@ def validate_request(request: MachiningRequest, machine: MachineProfile) -> tupl
 
     errors: list[str] = []
     warnings: list[str] = []
-    legacy_warning = legacy_operation_warning(request.tool_type, request.operation)
+    guided = request.workflow_mode == "guided" or request.operation.strip().casefold() == "ai guided"
+    legacy_warning = "" if guided else legacy_operation_warning(request.tool_type, request.operation)
     if legacy_warning:
         errors.append(legacy_warning)
     p = request.parameters
@@ -87,8 +127,10 @@ def validate_request(request: MachiningRequest, machine: MachineProfile) -> tupl
             errors.append(f"{label} cannot be negative.")
 
     count = _number(p, "flute_count", "insert_count")
-    if family in {"end_mill", "indexable"} and (count is None or count < 1 or count > 100):
+    if family in {"end_mill", "indexable"} and (count is None or count < 1 or count > 100) and not guided:
         errors.append("Enter a sensible flute or insert count (at least 1).")
+    elif family in {"end_mill", "indexable"} and (count is None or count < 1) and guided:
+        warnings.append("Tool flute/insert count is unknown; verify the feed relationship before running.")
 
     if family == "tap":
         pitch = _number(p, "pitch_mm")
@@ -143,6 +185,11 @@ def validate_and_correct_result(
     corrected = result.copy()
     corrections: list[str] = []
     warnings = list(corrected.warnings)
+    if request.workflow_mode == "guided":
+        if not result.recommended_operation or not result.recommended_strategy:
+            raise StructuredResponseError("AI-guided result must include a recommended operation and strategy")
+        if not result.recommended_pass_count or not result.pass_plan:
+            raise StructuredResponseError("AI-guided result must include a pass count and at least one pass-plan stage")
     family = tool_family(request.tool_type)
     p = request.parameters
     diameter = _number(p, "diameter_mm", "cutter_diameter_mm")
@@ -155,6 +202,22 @@ def validate_and_correct_result(
     if corrected.feed_mm_min is None:
         raise StructuredResponseError("Result does not contain a usable feed")
     source_rpm = corrected.rpm
+    constraints = p.get("constraints", {}) if request.workflow_mode == "guided" else {}
+    constraints = constraints if isinstance(constraints, dict) else {}
+    limit_fields = {
+        "max_rpm": ("Maximum RPM", machine.max_rpm),
+        "max_feed_mm_min": ("Maximum feed", machine.max_feed_mm_min),
+        "max_axial_doc_mm": ("Maximum axial DOC", None),
+        "max_radial_engagement_mm": ("Maximum radial engagement", None),
+        "max_stepover_mm": ("Maximum stepover", None),
+    }
+    limits: dict[str, float] = {}
+    for key, (label, machine_limit) in limit_fields.items():
+        requested = _number({"value": constraints.get(key)}, "value")
+        if requested is not None and requested > 0:
+            limits[key] = min(requested, machine_limit) if machine_limit is not None else requested
+        elif machine_limit is not None:
+            limits[key] = machine_limit
 
     if family in {"drill", "reamer"}:
         if corrected.feed_per_rev_mm is None:
@@ -173,9 +236,11 @@ def validate_and_correct_result(
             corrections.append("Feed per revolution derived from feed and RPM.")
     else:
         count = _number(p, "flute_count", "insert_count")
-        if count is None or count < 1:
+        if (count is None or count < 1) and request.workflow_mode == "guided":
+            corrected.feed_per_tooth_mm = None
+        elif count is None or count < 1:
             raise CalculationInputError("Flute/insert count must be at least 1.")
-        if corrected.feed_per_tooth_mm is None:
+        elif corrected.feed_per_tooth_mm is None:
             corrected.feed_per_tooth_mm = result.feed_mm_min / (source_rpm * count)
             corrections.append("Feed per tooth derived from feed, RPM, and tooth count.")
 
@@ -187,12 +252,22 @@ def validate_and_correct_result(
                 corrected.feed_mm_min = tapping_feed_mm_min(corrected.rpm, pitch)
             elif corrected.feed_per_rev_mm is not None:
                 corrected.feed_mm_min = drilling_feed_mm_min(corrected.rpm, corrected.feed_per_rev_mm)
-        else:
+        elif count is not None and corrected.feed_per_tooth_mm is not None:
             corrected.feed_mm_min = milling_feed_mm_min(corrected.rpm, count, corrected.feed_per_tooth_mm)
+        elif request.workflow_mode == "guided" and source_rpm > 0:
+            corrected.feed_mm_min = result.feed_mm_min * corrected.rpm / source_rpm
 
-    if corrected.rpm > machine.max_rpm:
-        corrected.rpm = machine.max_rpm
-        correction = f"RPM limited locally to the {machine.name} maximum of {machine.max_rpm:g} RPM."
+    def limit_label_for(key: str, machine_limit: float) -> str:
+        requested = _number({"value": constraints.get(key)}, "value")
+        if requested is not None and 0 < requested <= machine_limit:
+            return "requested maximum"
+        return f"{machine.name} maximum"
+
+    effective_max_rpm = limits["max_rpm"]
+    if corrected.rpm > effective_max_rpm:
+        corrected.rpm = effective_max_rpm
+        limit_label = limit_label_for("max_rpm", machine.max_rpm)
+        correction = f"RPM limited locally to the {limit_label} of {effective_max_rpm:g} RPM."
         corrections.append(correction)
         warnings.append(correction)
     recalculate_feed()
@@ -252,30 +327,93 @@ def validate_and_correct_result(
         if corrected.tap_drill_mm is None:
             warnings.append("AI did not provide a tapping drill size; verify the thread and tap type.")
 
-    if corrected.feed_mm_min > machine.max_feed_mm_min:
+    effective_max_feed = limits["max_feed_mm_min"]
+    if corrected.feed_mm_min > effective_max_feed:
         if family == "tap" and rigid_tapping:
             feed_per_rpm = pitch
             relationship = "RPM × exact pitch"
         elif family in {"drill", "reamer", "tap"}:
             feed_per_rpm = corrected.feed_per_rev_mm
             relationship = "RPM × feed per revolution"
+        elif count is None and request.workflow_mode == "guided":
+            corrected.feed_mm_min = effective_max_feed
+            limit_label = limit_label_for("max_feed_mm_min", machine.max_feed_mm_min)
+            correction = f"Feed limited locally to the {limit_label} of {effective_max_feed:g} mm/min because tool tooth count is unknown."
+            corrections.append(correction)
+            warnings.append(correction)
+            feed_per_rpm = None
+            relationship = "unknown tooth count"
         else:
             feed_per_rpm = corrected.feed_per_tooth_mm * count
             relationship = "RPM × teeth × feed per tooth"
-        if feed_per_rpm is None or feed_per_rpm <= 0:
+        if feed_per_rpm is None and request.workflow_mode == "guided" and count is None:
+            pass
+        elif feed_per_rpm is None or feed_per_rpm <= 0:
             raise StructuredResponseError("Feed exceeds the machine limit but has no valid dependent relationship")
-        allowed_rpm = machine.max_feed_mm_min / feed_per_rpm
-        if allowed_rpm <= 0:
-            raise StructuredResponseError("Machine feed limit cannot support the returned feed relationship")
-        if allowed_rpm < corrected.rpm:
-            corrected.rpm = allowed_rpm
-            correction = (
-                f"RPM reduced locally to {allowed_rpm:g} to stay within the {machine.name} feed limit "
-                f"while preserving {relationship}."
+        else:
+            allowed_rpm = effective_max_feed / feed_per_rpm
+            if allowed_rpm <= 0:
+                raise StructuredResponseError("Machine feed limit cannot support the returned feed relationship")
+            if allowed_rpm < corrected.rpm:
+                corrected.rpm = allowed_rpm
+                correction = (
+                    f"RPM reduced locally to {allowed_rpm:g} to stay within the {machine.name} feed limit "
+                    f"while preserving {relationship}."
+                )
+                corrections.append(correction)
+                warnings.append(correction)
+                recalculate_feed()
+
+    for index, stage in enumerate(corrected.pass_plan):
+        stage_rpm = _number(stage, "rpm")
+        stage_feed = _number(stage, "feed_mm_min")
+        # Scale the stage's RPM and feed together so a local limit never
+        # changes the feed per tooth/rev the model chose for that pass.
+        if stage_rpm is not None and stage_rpm > effective_max_rpm:
+            if stage_feed is not None and stage_rpm > 0:
+                stage_feed = stage_feed * effective_max_rpm / stage_rpm
+                stage["feed_mm_min"] = stage_feed
+            stage_rpm = effective_max_rpm
+            stage["rpm"] = stage_rpm
+            message = f"Pass {index + 1} RPM limited locally to {effective_max_rpm:g} RPM" + (
+                "; feed reduced in proportion." if stage_feed is not None else "."
             )
-            corrections.append(correction)
-            warnings.append(correction)
-            recalculate_feed()
+            corrections.append(message)
+            warnings.append(message)
+        if stage_feed is not None and stage_feed > effective_max_feed:
+            if stage_rpm is not None and stage_feed > 0:
+                stage["rpm"] = stage_rpm * effective_max_feed / stage_feed
+            stage["feed_mm_min"] = effective_max_feed
+            message = f"Pass {index + 1} feed limited locally to {effective_max_feed:g} mm/min" + (
+                "; RPM reduced in proportion." if stage_rpm is not None else "."
+            )
+            corrections.append(message)
+            warnings.append(message)
+        for result_key, constraint_key, stage_key in (
+            ("axial_doc_mm", "max_axial_doc_mm", "axial_doc_mm"),
+            ("radial_doc_mm", "max_radial_engagement_mm", "radial_engagement_mm"),
+            ("stepover_mm", "max_stepover_mm", "stepover_mm"),
+        ):
+            maximum = limits.get(constraint_key)
+            stage_value = _number(stage, stage_key)
+            if maximum is not None and stage_value is not None and stage_value > maximum:
+                stage[stage_key] = maximum
+                message = f"Pass {index + 1} {stage_key.replace('_', ' ')} limited locally to the requested {maximum:g} mm maximum."
+                corrections.append(message)
+                warnings.append(message)
+
+    for result_key, constraint_key, label in (
+        ("axial_doc_mm", "max_axial_doc_mm", "axial DOC"),
+        ("radial_doc_mm", "max_radial_engagement_mm", "radial engagement"),
+        ("stepover_mm", "max_stepover_mm", "stepover"),
+    ):
+        maximum = limits.get(constraint_key)
+        actual = getattr(corrected, result_key)
+        if maximum is not None and actual is not None and actual > maximum:
+            setattr(corrected, result_key, maximum)
+            message = f"{label.title()} limited locally to the requested {maximum:g} mm maximum."
+            corrections.append(message)
+            warnings.append(message)
 
     expected_speed = cutting_speed_m_min(diameter, corrected.rpm)
     if not _close(result.cutting_speed_m_min, expected_speed):
@@ -289,15 +427,26 @@ def validate_and_correct_result(
 class CalculationService:
     """Cache-first orchestration shared by every tool family."""
 
-    def __init__(self, database: Database, ai_service: Any):
+    def __init__(self, database: Database, ai_service: Any, progress_callback: Callable[[str], None] | None = None):
         self.database = database
         self.ai_service = ai_service
+        self.progress_callback = progress_callback
         # The UI uses this read-only context when a response cannot become a
         # CalculationOutcome. It deliberately contains no API credentials.
         self.last_failure_context: dict[str, Any] = {}
 
+    def _progress(self, message: str) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(message)
+
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> CalculationOutcome:
         request = replace(request, parameters=active_parameters(request.tool_type, request.operation, request.parameters))
+        guided = request.workflow_mode == "guided" or request.operation.strip().casefold() == "ai guided"
+        if guided and not getattr(self.ai_service, "is_mock", False):
+            request = replace(
+                request,
+                comparison_history=related_calculation_history(self.database, request),
+            )
         normalized = normalize_request(request)
         request_key = request_hash(normalized)
         selected_model = str(getattr(self.ai_service, "model", "") or "")
@@ -363,6 +512,10 @@ class CalculationService:
                     }
                 )
                 cached_result = result_from_json(cached["validated_data_json"])
+                if guided and cached_result.verification_status == "check_incomplete":
+                    # Entries cached by earlier releases before the check
+                    # finished must not block a fresh, fully checked attempt.
+                    raise StructuredResponseError("Cached result has no completed independent check")
                 validated, corrections = validate_and_correct_result(cached_result, request, machine)
             except (StructuredResponseError, CalculationInputError):
                 cached = None
@@ -382,7 +535,10 @@ class CalculationService:
                     validation_corrections=corrections,
                 )
 
+        self.last_failure_context["stage"] = "AI research"
+        self._progress("Researching tool, material and machining strategy")
         service_response: ServiceResponse = self.ai_service.calculate(request, machine)
+        self._progress("Validating speeds, feeds and machine limits")
         self.last_failure_context.update(
             {
                 "source": "mock" if service_response.is_mock else "ai",
@@ -392,25 +548,148 @@ class CalculationService:
                 "response_id": service_response.response_id,
                 "usage": service_response.usage or {},
                 "stage": "structured response validation",
+                "research_status": service_response.research_status,
+                "research_sources": service_response.research_sources or [],
             }
         )
         model_result = result_from_dict(service_response.payload)
         validated, corrections = validate_and_correct_result(model_result, request, machine)
         validated.warnings = list(dict.fromkeys(input_warnings + validated.warnings))
+
+        primary_sources = list(service_response.research_sources or [])
+        validated.research_sources = primary_sources
+        validated.research_status = service_response.research_status
+        continuity_findings = small_depth_change_findings(request, validated.to_dict()) if guided else []
+        validated.history_comparison = continuity_findings
+
+        reviewer_response = None
+        verification_error = ""
+        verifier = getattr(self.ai_service, "verify", None)
+        if guided and not service_response.is_mock and callable(verifier):
+            self.last_failure_context["stage"] = "independent check"
+            self._progress("Independently checking the recommendation")
+            try:
+                reviewer_response = verifier(
+                    request,
+                    machine,
+                    validated.to_dict(),
+                    continuity_findings=continuity_findings,
+                    validation_corrections=corrections,
+                    research_sources=primary_sources,
+                )
+            except Exception as exc:
+                verification_error = "timeout" if isinstance(exc, OpenAIServiceError) and "timed out" in str(exc) else type(exc).__name__
+                self.last_failure_context.update(
+                    {
+                        "verification_error": verification_error,
+                        "verification_status": "check_incomplete",
+                    }
+                )
+
+        verification_usage: dict[str, Any] = {}
+        if guided and not service_response.is_mock:
+            if reviewer_response is None:
+                validated.verification_status = "check_incomplete"
+                detail = f" ({verification_error})" if verification_error else ""
+                validated.verification_summary = (
+                    "The independent check did not complete"
+                    + detail
+                    + "; treat this recommendation as unverified."
+                )
+                validated.warnings.append(validated.verification_summary)
+                validated.confidence = "low"
+                if primary_sources:
+                    validated.research_status = "searched"
+                elif service_response.research_status in {"unavailable", "no_sources"}:
+                    validated.research_status = service_response.research_status
+                    validated.warnings.append(
+                        "No current web-search source was verified for this calculation."
+                    )
+                else:
+                    validated.research_status = "not_used"
+                    validated.warnings.append(
+                        "No web-search citations were available for this calculation."
+                    )
+            else:
+                report = reviewer_response.payload
+                report_status = report.get("status")
+                history_assessment = report.get("history_change_assessment", "unclear")
+                history_reason = str(report.get("history_change_reason") or "").strip()
+                validated.verification_summary = str(report.get("summary") or "Independent check returned no summary.")
+                findings = report.get("findings", [])
+                validated.verification_findings = [str(item) for item in findings if isinstance(item, str)][:8] if isinstance(findings, list) else []
+                if continuity_findings and history_reason:
+                    validated.verification_findings.append(
+                        "History change rationale: " + history_reason[:500]
+                    )
+                validated.verification_response_id = reviewer_response.response_id
+                validation_status_ok = report_status == "consistent"
+                history_change_ok = not continuity_findings or (
+                    history_assessment == "justified" and bool(history_reason)
+                )
+                if validation_status_ok and history_change_ok:
+                    validated.verification_status = "cross_checked"
+                else:
+                    validated.verification_status = "review_required"
+                    validated.confidence = "low"
+                    validated.warnings.append(
+                        "Independent check requires operator review: " + validated.verification_summary
+                    )
+                    validated.warnings.extend(validated.verification_findings)
+
+                reviewer_sources = list(reviewer_response.research_sources or [])
+                validated.research_sources = _merge_research_sources(primary_sources, reviewer_sources)
+                search_statuses = {service_response.research_status, reviewer_response.research_status}
+                if validated.research_sources:
+                    validated.research_status = "searched"
+                elif "unavailable" in search_statuses:
+                    validated.research_status = "unavailable"
+                    validated.warnings.append(
+                        "Live web research was unavailable; no current external source was verified."
+                    )
+                elif "no_sources" in search_statuses:
+                    validated.research_status = "no_sources"
+                    validated.warnings.append(
+                        "Web search returned no usable citations for this setup; key tool/material facts remain unverified."
+                    )
+                else:
+                    validated.research_status = "not_used"
+                    validated.warnings.append(
+                        "The model did not return web-search citations; key tool/material facts remain unverified."
+                    )
+                self.last_failure_context.update(
+                    {
+                        "verification_prompt": reviewer_response.prompt,
+                        "verification_raw_response": reviewer_response.raw_text,
+                        "verification_response_id": reviewer_response.response_id,
+                        "verification_status": validated.verification_status,
+                        "verification_findings": validated.verification_findings,
+                        "research_status": validated.research_status,
+                        "research_sources": validated.research_sources,
+                    }
+                )
+                verification_usage = reviewer_response.usage or {}
+
+        self._progress("Finishing the result")
+        validated.warnings = list(dict.fromkeys(validated.warnings))
+        combined_usage = _combine_usage(service_response.usage or {}, verification_usage)
         validated_json = json.dumps(validated.to_dict(), ensure_ascii=False, sort_keys=True)
 
         if not service_response.is_mock:
             actual_cache_key = model_cache_identity(normalized, service_response.model)
             self.last_failure_context["cache_identity"] = actual_cache_key
-            self.database.put_cache_record(
-                request_hash=actual_cache_key,
-                normalized_request=normalized,
-                returned_data=service_response.payload,
-                validated_data=validated.to_dict(),
-                model=service_response.model,
-                response_id=service_response.response_id,
-                usage=service_response.usage or {},
-            )
+            # An incomplete independent check is not cached, so repeating the
+            # calculation retries the check instead of replaying this result.
+            if validated.verification_status != "check_incomplete":
+                self.database.put_cache_record(
+                    request_hash=actual_cache_key,
+                    normalized_request=normalized,
+                    returned_data=service_response.payload,
+                    validated_data=validated.to_dict(),
+                    model=service_response.model,
+                    response_id=service_response.response_id,
+                    usage=combined_usage,
+                )
             self.database.add_recent(
                 request_key, normalized, validated.to_dict(), "ai", model=service_response.model
             )
@@ -426,8 +705,10 @@ class CalculationService:
             raw_response=service_response.raw_text,
             validated_response=validated_json,
             response_id=service_response.response_id,
-            usage=service_response.usage or {},
+            usage=combined_usage,
             validation_corrections=corrections,
+            verification_prompt=reviewer_response.prompt if reviewer_response else "",
+            verification_raw_response=reviewer_response.raw_text if reviewer_response else "",
         )
 
     def save_workshop_preference(

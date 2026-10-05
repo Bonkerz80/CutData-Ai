@@ -154,6 +154,13 @@ class Database:
                     "ALTER TABLE recent_calculations ADD COLUMN model TEXT NOT NULL DEFAULT ''"
                 )
 
+        # Keep the retired saved_tools table untouched for compatibility.
+        # The normalized library is additive and its stable seeds are inserted
+        # only when their seed_key is absent.
+        from ..services.tool_library import initialize_tool_library
+
+        initialize_tool_library(self)
+
     # Cache ---------------------------------------------------------------
     def get_cache_record(
         self,

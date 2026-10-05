@@ -259,7 +259,7 @@ def test_mock_results_are_not_written_to_production_cache(tmp_path):
     database = Database(tmp_path / "mock.sqlite3")
     CalculationService(database, CountingAI("gpt-6-luna")).calculate(req(22), MACHINE)
     service = CalculationService(database, MockOpenAIService())
-    assert service.ai_service.model == "gpt-6-luna"
+    assert service.ai_service.model == "gpt-6.1-sol"
     outcome = service.calculate(req(22), MACHINE)
     assert outcome.source == "mock"
     assert outcome.cache_hit is False

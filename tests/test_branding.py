@@ -28,8 +28,8 @@ def test_ppt_branding_and_packaged_icon_assets_are_present():
     assert COMPANY_WEBSITE == "https://www.ppt-eng.co.uk/"
     assert BRAND_RED == "#CE1D1D"
     assert BRAND_GRAPHITE == "#1B2228"
-    assert PRODUCT_TAGLINE == "AI-Assisted CNC Machining Calculator"
-    assert PRODUCT_DESCRIPTION == "AI-Assisted CNC Speeds & Feeds Calculator"
+    assert PRODUCT_TAGLINE == "AI-Guided CNC Machining Adviser"
+    assert PRODUCT_DESCRIPTION == "AI-guided CNC machining adviser with a persistent workshop tool library"
     assert WINDOWS_ICON_PATH == PPT_LEGACY_ICON_PATH
     assert WINDOWS_ICON_PATH.is_file()
     for path in (ICON_SVG_PATH, ICON_PNG_PATH, ICON_ICO_PATH):

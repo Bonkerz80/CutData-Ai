@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -30,6 +31,7 @@ def qapp():
 @pytest.fixture
 def window(qapp, tmp_path):
     value = MainWindow(Database(tmp_path / "workflow.sqlite3"))
+    value.workflow_combo.setCurrentIndex(1)
     value.show()
     qapp.processEvents()
     yield value
@@ -64,6 +66,28 @@ def outcome(normalized, result, *, source="ai", model="test-model"):
         model=model,
         validated_response=json.dumps(result.to_dict()),
     )
+
+
+def test_guided_review_status_uses_warning_banner(window):
+    normalized = normalized_request(
+        "Indexable End Mill",
+        {"diameter_mm": 25, "insert_count": 2},
+        operation="AI Guided",
+    )
+    normalized["workflow_mode"] = "guided"
+    result = MachiningResult(
+        rpm=1500,
+        feed_mm_min=210,
+        recommended_operation="Roughing Waterline",
+        recommended_strategy="Rough in axial passes",
+        verification_status="review_required",
+        verification_summary="The small depth change does not explain the RPM shift.",
+    )
+
+    window._show_result(outcome(normalized, result))
+
+    assert window.result_banner.objectName() == "reviewBanner"
+    assert "REVIEW REQUIRED" in window.result_banner.text()
 
 
 @pytest.mark.parametrize(
@@ -401,7 +425,7 @@ def test_startup_restores_family_with_complete_placeholder_display(
 ):
     database = Database(tmp_path / "startup.sqlite3")
     # Exercise actual startup and persisted selection, before any calculation.
-    database.set_setting("last_calculator_state", json.dumps({"global": {"tool_type": tool_type}}))
+    database.set_setting("last_calculator_state", json.dumps({"global": {"tool_type": tool_type, "workflow_mode": "manual"}}))
     window = MainWindow(database)
     window.show()
     qapp.processEvents()
@@ -538,6 +562,49 @@ def test_invalid_peck_response_uses_clean_retry_and_keeps_placeholder_display(wi
     assert window.info_group.isVisible() and window.derived_group.isVisible()
     assert window.notes_group.isVisible()
     assert not window.database.recent()
+
+
+def test_cancelled_calculation_can_be_restarted_while_old_request_winds_down(window, qapp, monkeypatch):
+    gates = [threading.Event(), threading.Event()]
+    started = [threading.Event(), threading.Event()]
+
+    class ControlledCalculation:
+        calls = 0
+
+        def __init__(self, database, ai_service):
+            pass
+
+        def calculate(self, request, machine):
+            index = ControlledCalculation.calls
+            ControlledCalculation.calls += 1
+            self.progress_callback("Researching test recommendation")
+            started[index].set()
+            gates[index].wait(timeout=5)
+            raise RuntimeError("test request ended")
+
+    monkeypatch.setattr("src.cutdata_ai.ui.main_window.CalculationService", ControlledCalculation)
+    window._calculate()
+    assert started[0].wait(timeout=2)
+    QTest.qWait(30)
+    assert "Researching test recommendation" in window.result_status.text()
+    window._cancel_calculation()
+    assert window.calculate_button.text() == "RESTART CALCULATION"
+    window.calculate_button.click()
+    assert "Restart queued" in window.result_status.text()
+    assert ControlledCalculation.calls == 1
+
+    gates[0].set()
+    timer = QElapsedTimer()
+    timer.start()
+    while not started[1].is_set() and timer.elapsed() < 3000:
+        QTest.qWait(10)
+    assert started[1].is_set()
+    assert ControlledCalculation.calls == 2
+    gates[1].set()
+    while window._thread is not None and timer.elapsed() < 5000:
+        QTest.qWait(10)
+    assert window._thread is None
+    assert window.calculate_button.isEnabled()
 
 
 def test_reamer_response_discards_peck_data_and_populates_debug(window, qapp):

@@ -103,9 +103,17 @@ class SettingsService:
         stored_mock_mode = self.database.get_setting("mock_mode")
         api_key_source = self.get_active_api_key_source()
         stored_model = self.database.get_setting("model")
-        model = normalise_model_preference(stored_model)
+        # Existing installations saved the old default on ordinary settings
+        # writes. Move that value once, while retaining later explicit choices.
+        migration_key = "default_model_migration_6_1_sol"
+        if stored_model == "gpt-6-luna" and self.database.get_setting(migration_key) != "done":
+            model = "gpt-6.1-sol"
+        else:
+            model = normalise_model_preference(stored_model)
         if stored_model is not None and stored_model != model:
             self.database.set_setting("model", model)
+        if self.database.get_setting(migration_key) != "done":
+            self.database.set_setting(migration_key, "done")
         stored_reasoning = self.database.get_setting("reasoning_effort")
         reasoning_effort = normalise_reasoning_effort(stored_reasoning)
         if stored_reasoning is not None and stored_reasoning != reasoning_effort:
@@ -130,6 +138,7 @@ class SettingsService:
 
     def save(self, settings: AppSettings) -> None:
         normalise_settings(settings)
+        self.database.set_setting("default_model_migration_6_1_sol", "done")
         values = asdict(settings)
         for key, value in values.items():
             if key == "api_key_source" and value not in {

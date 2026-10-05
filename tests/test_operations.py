@@ -58,6 +58,7 @@ def test_operation_fields_and_last_used_choice_follow_tool(tmp_path):
     app = QApplication.instance() or QApplication([])
     database = Database(Path(tmp_path) / "operations.sqlite3")
     window = MainWindow(database)
+    window.workflow_combo.setCurrentIndex(1)
     try:
         window.tool_combo.setCurrentText("End Mill")
         page = window.pages["end_mill"]
@@ -93,6 +94,7 @@ def test_legacy_operation_state_reopens_without_silent_mapping(tmp_path):
     )
     window = MainWindow(database)
     try:
+        window.workflow_combo.setCurrentIndex(1)
         assert window.tool_combo.currentText() == "End Mill"
         assert window.pages["end_mill"].fields["operation"].currentText() == "Profiling"
         assert "Profiling" in [

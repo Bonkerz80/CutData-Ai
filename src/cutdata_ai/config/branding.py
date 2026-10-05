@@ -13,8 +13,8 @@ COMPANY_WEBSITE = "https://www.ppt-eng.co.uk/"
 BRAND_RED = "#CE1D1D"
 BRAND_GRAPHITE = "#1B2228"
 BRAND_INK = "#17212B"
-PRODUCT_TAGLINE = "AI-Assisted CNC Machining Calculator"
-PRODUCT_DESCRIPTION = "AI-Assisted CNC Speeds & Feeds Calculator"
+PRODUCT_TAGLINE = "AI-Guided CNC Machining Adviser"
+PRODUCT_DESCRIPTION = "AI-guided CNC machining adviser with a persistent workshop tool library"
 REPOSITORY_URL = "https://github.com/Bonkerz80/CutData-Ai"
 
 

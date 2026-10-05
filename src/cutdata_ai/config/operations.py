@@ -124,7 +124,7 @@ def operations_for_tool(tool_type: str) -> tuple[str, ...]:
         return _BULL_NOSE_OPERATIONS
     if value == "face mill":
         return (FACE_MILLING,)
-    if value == "indexable end mill":
+    if value in {"indexable end mill", "round insert / bull cutter"}:
         return _INDEXABLE_END_MILL_OPERATIONS
     if value == "thread mill":
         return LEGACY_MILLING_OPERATIONS
@@ -137,7 +137,7 @@ def default_operation_for_tool(tool_type: str) -> str:
     value = str(tool_type or "").casefold()
     if value == "ball nose end mill":
         return FINISHING_WATERLINE
-    if value in {"bull nose / corner radius end mill", "end mill", "indexable end mill"}:
+    if value in {"bull nose / corner radius end mill", "end mill", "indexable end mill", "round insert / bull cutter"}:
         return ROUGHING_WATERLINE
     if value == "face mill":
         return FACE_MILLING
@@ -162,6 +162,7 @@ _LEGACY_OPERATION_TOOL_TYPES = frozenset({
     "bull nose / corner radius end mill",
     "face mill",
     "indexable end mill",
+    "round insert / bull cutter",
 })
 
 
@@ -188,6 +189,10 @@ def legacy_operation_warning(tool_type: str, operation: str) -> str:
 def active_parameters(tool_type: str, operation: str, parameters: dict) -> dict:
     """Filter machining inputs by meaning, independently of widget visibility."""
     result = dict(parameters)
+    if str(operation or "").strip().casefold() == "ai guided":
+        # Guided job geometry and optional constraints are intentionally not
+        # filtered by the old operation-specific manual form rules.
+        return result
     if operations_for_tool(tool_type):
         config = operation_field_config(operation)
         for key, applicable in {

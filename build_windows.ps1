@@ -6,7 +6,12 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $buildVenv = Join-Path $projectRoot ".venv-build"
 $buildPython = Join-Path $buildVenv "Scripts\python.exe"
+$existingBuildPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $newEnvironment = -not (Test-Path -LiteralPath $buildPython)
+if ($newEnvironment -and (Test-Path -LiteralPath $existingBuildPython)) {
+    $buildPython = $existingBuildPython
+    $newEnvironment = $false
+}
 if (-not (Test-Path -LiteralPath $buildPython)) {
     py -3 -m venv $buildVenv
     if ($LASTEXITCODE -ne 0) { throw "Could not create the isolated build environment." }

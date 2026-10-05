@@ -5,17 +5,37 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from ..config.constants import DEFAULT_MODEL, model_display_name
 from ..models.domain import MachiningRequest, MachineProfile
 from ..models.schema import StructuredResponseError
-from ..prompts.machining import SYSTEM_PROMPT, build_user_prompt, schema_for_openai
+from ..prompts.machining import (
+    SYSTEM_PROMPT,
+    VERIFICATION_INSTRUCTIONS,
+    VERIFICATION_SCHEMA,
+    build_user_prompt,
+    build_verification_prompt,
+    schema_for_openai,
+)
 
 
 class OpenAIServiceError(RuntimeError):
     """An API or response transport error suitable for display in the UI."""
+
+
+API_REQUEST_TIMEOUT_SECONDS = 90.0
+
+
+def _request_error(stage: str, exc: Exception) -> OpenAIServiceError:
+    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.casefold():
+        return OpenAIServiceError(
+            f"{stage} timed out after {API_REQUEST_TIMEOUT_SECONDS:g} seconds. "
+            "Try again, or choose a lower reasoning level in Settings."
+        )
+    return OpenAIServiceError(f"{stage} failed: {type(exc).__name__}")
 
 
 @dataclass(frozen=True)
@@ -87,6 +107,19 @@ class ServiceResponse:
     response_id: str = ""
     usage: dict[str, Any] | None = None
     is_mock: bool = False
+    research_status: str = "not_applicable"
+    research_sources: list[dict[str, str]] | None = None
+
+
+@dataclass
+class VerificationResponse:
+    payload: dict[str, Any]
+    raw_text: str
+    prompt: str
+    response_id: str = ""
+    usage: dict[str, Any] | None = None
+    research_status: str = "not_used"
+    research_sources: list[dict[str, str]] | None = None
 
 
 def _as_plain(value: Any) -> Any:
@@ -134,6 +167,54 @@ def _extract_payload(response: Any) -> tuple[dict[str, Any], str]:
     raise OpenAIServiceError("OpenAI returned no valid structured machining result")
 
 
+def _extract_search_sources(response: Any) -> tuple[list[dict[str, str]], bool]:
+    """Collect URLs from actual web-search output and citation annotations."""
+
+    plain = _as_plain(response)
+    output = plain.get("output", []) if isinstance(plain, dict) else []
+    if not isinstance(output, list):
+        return [], False
+    used_search = False
+    sources: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add_source(url: Any, title: Any = "") -> None:
+        clean_url = str(url or "").strip()
+        if not clean_url.startswith(("https://", "http://")) or clean_url.casefold() in seen:
+            return
+        seen.add(clean_url.casefold())
+        sources.append({"title": str(title or "").strip(), "url": clean_url})
+
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "web_search_call":
+            used_search = True
+            action = item.get("action", {})
+            if isinstance(action, dict):
+                for source in action.get("sources", []) or []:
+                    if isinstance(source, dict):
+                        add_source(source.get("url"), source.get("title", ""))
+        content_items = item.get("content", [])
+        for content in content_items if isinstance(content_items, list) else []:
+            if not isinstance(content, dict):
+                continue
+            for annotation in content.get("annotations", []) or []:
+                if isinstance(annotation, dict) and annotation.get("type") == "url_citation":
+                    add_source(annotation.get("url"), annotation.get("title", ""))
+    return sources[:12], used_search
+
+
+def _search_failure_is_retryable(exc: Exception) -> bool:
+    status = _exception_status_code(exc)
+    return status in {400, 403, 404, 422} or isinstance(exc, TypeError)
+
+
+def _safe_search_error(exc: Exception) -> str:
+    status = _exception_status_code(exc)
+    return f"{type(exc).__name__}" + (f" (HTTP {status})" if status is not None else "")
+
+
 class OpenAIService:
     """Thin wrapper around the official OpenAI Python SDK Responses API."""
 
@@ -157,7 +238,9 @@ class OpenAIService:
                 from openai import OpenAI
             except ImportError as exc:
                 raise OpenAIServiceError("The OpenAI package is not installed") from exc
-            self.client = OpenAI(api_key=api_key, timeout=90.0, max_retries=2)
+            # Two sequential research/check calls are already expensive. SDK
+            # retries multiply a 90-second timeout into many silent minutes.
+            self.client = OpenAI(api_key=api_key, timeout=API_REQUEST_TIMEOUT_SECONDS, max_retries=0)
 
     def test_connection(self) -> ConnectionTestResult:
         """Verify key authentication and selected-model access with no tokens.
@@ -189,37 +272,64 @@ class OpenAIService:
 
     def calculate(self, request: MachiningRequest, machine: MachineProfile) -> ServiceResponse:
         prompt = build_user_prompt(request, machine)
-        try:
-            response = self.client.responses.create(
-                model=self.model,
-                reasoning={"effort": self.reasoning_effort},
-                input=[
-                    {
-                        "role": "developer",
-                        "content": [{"type": "input_text", "text": SYSTEM_PROMPT}],
-                    },
-                    {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": prompt}],
-                    },
-                ],
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "machining_result",
-                        "strict": True,
-                        "schema": schema_for_openai(),
-                    }
+        guided = request.workflow_mode == "guided" or request.operation.strip().casefold() == "ai guided"
+        request_args: dict[str, Any] = {
+            "model": self.model,
+            "reasoning": {"effort": self.reasoning_effort},
+            "input": [
+                {
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": SYSTEM_PROMPT}],
                 },
-            )
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "machining_result",
+                    "strict": True,
+                    "schema": schema_for_openai(),
+                }
+            },
+        }
+        search_status = "not_applicable"
+        search_error = ""
+        started_at = time.monotonic()
+        try:
+            if guided:
+                request_args.update(
+                    tools=[{"type": "web_search", "search_context_size": "high"}],
+                    max_tool_calls=4,
+                    include=["web_search_call.action.sources"],
+                )
+            response = self.client.responses.create(**request_args)
         except Exception as exc:
-            # Do not include the key or the full request in the exception text.
-            raise OpenAIServiceError(f"OpenAI request failed: {exc}") from exc
+            if not guided or not _search_failure_is_retryable(exc):
+                # Do not echo credentials or a full request into user-facing errors.
+                raise _request_error("AI research", exc) from exc
+            search_error = _safe_search_error(exc)
+            search_status = "unavailable"
+            request_args.pop("tools", None)
+            request_args.pop("max_tool_calls", None)
+            request_args.pop("include", None)
+            try:
+                response = self.client.responses.create(**request_args)
+            except Exception as retry_exc:
+                raise _request_error("AI research", retry_exc) from retry_exc
 
         payload, raw_text = _extract_payload(response)
+        research_sources, search_used = _extract_search_sources(response)
+        if guided and search_status != "unavailable":
+            search_status = "searched" if research_sources else "no_sources" if search_used else "not_used"
         usage = _as_plain(getattr(response, "usage", None))
         if not isinstance(usage, dict):
             usage = {}
+        if search_error:
+            usage["web_search_error"] = search_error
+        usage["research_elapsed_seconds"] = round(time.monotonic() - started_at, 1)
         return ServiceResponse(
             payload=payload,
             raw_text=raw_text,
@@ -227,6 +337,81 @@ class OpenAIService:
             model=self.model,
             response_id=str(getattr(response, "id", "") or ""),
             usage=usage,
+            research_status=search_status,
+            research_sources=research_sources,
+        )
+
+    def verify(
+        self,
+        request: MachiningRequest,
+        machine: MachineProfile,
+        candidate_result: dict[str, Any],
+        *,
+        continuity_findings: list[str],
+        validation_corrections: list[str],
+        research_sources: list[dict[str, str]],
+    ) -> VerificationResponse:
+        """Ask for an independent, source-aware review without changing values."""
+
+        prompt = build_verification_prompt(
+            request,
+            machine,
+            candidate_result,
+            research_sources=research_sources,
+            continuity_findings=continuity_findings,
+            validation_corrections=validation_corrections,
+        )
+        request_args: dict[str, Any] = {
+            "model": self.model,
+            "reasoning": {"effort": "high"},
+            "input": [
+                {"role": "developer", "content": [{"type": "input_text", "text": VERIFICATION_INSTRUCTIONS}]},
+                {"role": "user", "content": [{"type": "input_text", "text": prompt}]},
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "machining_verification",
+                    "strict": True,
+                    "schema": VERIFICATION_SCHEMA,
+                }
+            },
+            "tools": [{"type": "web_search", "search_context_size": "high"}],
+            "max_tool_calls": 3,
+            "include": ["web_search_call.action.sources"],
+        }
+        search_status = "not_used"
+        started_at = time.monotonic()
+        try:
+            response = self.client.responses.create(**request_args)
+        except Exception as exc:
+            if not _search_failure_is_retryable(exc):
+                raise _request_error("Independent check", exc) from exc
+            search_status = "unavailable"
+            request_args.pop("tools", None)
+            request_args.pop("max_tool_calls", None)
+            request_args.pop("include", None)
+            try:
+                response = self.client.responses.create(**request_args)
+            except Exception as retry_exc:
+                raise _request_error("Independent check", retry_exc) from retry_exc
+
+        payload, raw_text = _extract_payload(response)
+        sources, search_used = _extract_search_sources(response)
+        if search_status != "unavailable":
+            search_status = "searched" if sources else "no_sources" if search_used else "not_used"
+        usage = _as_plain(getattr(response, "usage", None))
+        if not isinstance(usage, dict):
+            usage = {}
+        usage["check_elapsed_seconds"] = round(time.monotonic() - started_at, 1)
+        return VerificationResponse(
+            payload=payload,
+            raw_text=raw_text,
+            prompt=prompt,
+            response_id=str(getattr(response, "id", "") or ""),
+            usage=usage,
+            research_status=search_status,
+            research_sources=sources,
         )
 
 
@@ -447,6 +632,31 @@ class MockOpenAIService:
                 payload["notes"] = payload["notes"] + [
                     "Monitor chip thickness at the programmed radial engagement and adjust from the cut.",
                 ]
+
+        if request.workflow_mode == "guided":
+            job_type = str(p.get("job_type", "")).casefold()
+            if "face" in job_type:
+                mock_operation = "Face Milling"
+            elif "3d" in job_type or "wall" in job_type or "land" in job_type:
+                mock_operation = "Finishing Waterline"
+            else:
+                mock_operation = str((p.get("constraints") or {}).get("preferred_operation") or "Roughing Waterline")
+            payload.update(
+                recommended_operation=mock_operation,
+                recommended_strategy="DEVELOPMENT MOCK — not a real machining recommendation",
+                recommended_entry_method="Mock only; verify entry strategy",
+                recommended_finish_allowance_mm=None,
+                recommended_pass_count=1,
+                pass_plan=[{
+                    "stage": "Mock pass", "passes": 1, "operation": mock_operation,
+                    "axial_doc_mm": payload.get("axial_doc_mm"),
+                    "radial_engagement_mm": payload.get("radial_doc_mm"),
+                    "stepover_mm": payload.get("stepover_mm"),
+                    "stock_to_leave_mm": None, "rpm": payload.get("rpm"),
+                    "feed_mm_min": payload.get("feed_mm_min"),
+                    "notes": "Development placeholder only — confirm every value before use.",
+                }],
+            )
 
         payload["cutting_speed_m_min"] = round(math.pi * diameter * rpm / 1000.0, 3)
         prompt = build_user_prompt(request, machine)

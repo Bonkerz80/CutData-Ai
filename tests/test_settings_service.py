@@ -174,14 +174,23 @@ def test_saved_model_preferences_migrate_by_capability_tier(tmp_path, legacy_mod
     assert database.get_setting("model") == expected_model
 
 
-def test_unknown_model_preference_falls_back_to_luna(tmp_path):
+def test_unknown_model_preference_falls_back_to_new_default(tmp_path):
     database = Database(tmp_path / "unknown-model.sqlite3")
     database.set_setting("model", "unreleased-model-id")
 
     loaded = SettingsService(database).load()
 
-    assert loaded.model == "gpt-6-luna"
-    assert database.get_setting("model") == "gpt-6-luna"
+    assert loaded.model == "gpt-6.1-sol"
+    assert database.get_setting("model") == "gpt-6.1-sol"
+
+
+def test_old_saved_default_moves_once_but_a_later_luna_choice_is_kept(tmp_path):
+    database = Database(tmp_path / "default-model-migration.sqlite3")
+    database.set_setting("model", "gpt-6-luna")
+    service = SettingsService(database)
+    assert service.load().model == "gpt-6.1-sol"
+    database.set_setting("model", "gpt-6-luna")
+    assert service.load().model == "gpt-6-luna"
 
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high"])
