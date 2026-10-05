@@ -177,7 +177,7 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.2.3.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.2.4.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
 ### Previous-release baseline: 0.1.13
 

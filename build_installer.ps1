@@ -41,7 +41,7 @@ if (-not $buildPython) {
 $outputDir = Join-Path $projectRoot 'installer'
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 
-$installerName = 'CutData-AI-Setup-0.2.3.exe'
+$installerName = 'CutData-AI-Setup-0.2.4.exe'
 $installerPath = Join-Path $outputDir $installerName
 if (Test-Path -LiteralPath $installerPath) {
     throw "Refusing to overwrite an existing installer: $installerPath"
