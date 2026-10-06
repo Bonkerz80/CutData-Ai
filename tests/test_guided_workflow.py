@@ -633,3 +633,49 @@ def test_guided_hole_result_without_pass_count_or_plan_is_accepted():
     )
     with pytest.raises(StructuredResponseError):
         validate_and_correct_result(bare, guided("End Mill", flute_count=4), machine)
+
+
+def test_needs_review_is_a_tick_box_not_part_of_the_tool_name(qapp, tmp_path):
+    database = Database(tmp_path / "review.sqlite3")
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE tool_library SET display_name = display_name || ' \u2014 needs review' WHERE display_name = '12mm Carbide Chamfer Tool'"
+        )
+    window = MainWindow(Database(tmp_path / "review.sqlite3"))
+    try:
+        window.show()
+        library = ToolLibraryService(window.database)
+        names = [window.guided_tool_combo.itemText(i) for i in range(window.guided_tool_combo.count())]
+        assert not any("review" in name.casefold() for name in names)
+        assert "12mm Carbide Chamfer Tool" in names
+        assert not window.guided_needs_review.isVisible()
+
+        tool = next(item for item in library.list_tools() if item["display_name"] == "16mm Carbide 4-Flute End Mill")
+        assert tool["needs_review"] is True
+        window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+        qapp.processEvents()
+        assert window.guided_needs_review.isVisible() and window.guided_needs_review.isChecked()
+        assert "review" not in window.guided_tool_facts.text().casefold()
+
+        window.guided_material.setCurrentText("HSS")
+        window.guided_needs_review.click()
+        assert library.get_tool(tool["id"])["needs_review"] is False
+        assert window.guided_material.currentText() == "HSS"
+        assert window._collect_request().tool_snapshot["needs_review"] is False
+        window._refresh_guided_tools()
+        assert not window.guided_needs_review.isChecked()
+        assert window.guided_material.currentText() == "HSS"
+
+        window.guided_needs_review.click()
+        assert library.get_tool(tool["id"])["needs_review"] is True
+
+        confirmed = next(item for item in library.list_tools() if item["display_name"] == "25 Tipped")
+        window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(confirmed["id"]))
+        assert not window.guided_needs_review.isChecked()
+        window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData("temporary"))
+        qapp.processEvents()
+        assert not window.guided_needs_review.isVisible()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

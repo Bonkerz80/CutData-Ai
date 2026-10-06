@@ -239,6 +239,13 @@ class ToolLibraryService:
             )
             connection.execute("DELETE FROM tool_inserts WHERE id=?", (int(insert_id),))
 
+    def set_needs_review(self, tool_id: int, needs_review: bool) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                "UPDATE tool_library SET needs_review=?, updated_at=?, user_modified=1, revision=revision+1 WHERE id=?",
+                (int(bool(needs_review)), _now(), int(tool_id)),
+            )
+
     def tool_snapshot(self, tool_id: int) -> dict[str, Any] | None:
         tool = self.get_tool(tool_id)
         if tool is None:
@@ -391,9 +398,27 @@ def _seed_provenance(keys: tuple[str, ...], uncertain: tuple[str, ...] = ()) -> 
     }
 
 
+_REVIEW_NAME_SUFFIX = " \u2014 needs review"
+
+
+def _strip_review_suffix(database) -> None:
+    """Earlier releases wrote the review status into the name; the flag carries it."""
+
+    with database.connect() as connection:
+        for table in ("tool_library", "tool_inserts"):
+            rows = connection.execute(
+                f"SELECT id, display_name FROM {table} WHERE display_name LIKE ?", ("%" + _REVIEW_NAME_SUFFIX,)
+            ).fetchall()
+            for row in rows:
+                name = str(row["display_name"])[: -len(_REVIEW_NAME_SUFFIX)].strip()
+                if name:
+                    connection.execute(f"UPDATE {table} SET display_name=? WHERE id=?", (name, row["id"]))
+
+
 def seed_default_library(database) -> None:
     """Insert confirmed starting tools once; later edits survive future runs."""
     service = ToolLibraryService(database)
+    _strip_review_suffix(database)
     inserts = (
         {
             "seed_key": "insert.widia.xdpt11.wp25pm", "display_name": "WIDIA XDPT11 WP25PM",
@@ -421,7 +446,7 @@ def seed_default_library(database) -> None:
             "field_provenance": _seed_provenance(("manufacturer", "designation", "grade", "shape", "inscribed_circle_mm")),
         },
         {
-            "seed_key": "insert.zccct.seht1204afsn.review", "display_name": "ZCC-CT SEHT1204AFSN — needs review",
+            "seed_key": "insert.zccct.seht1204afsn.review", "display_name": "ZCC-CT SEHT1204AFSN",
             "manufacturer": "ZCC-CT", "designation": "SEHT1204AFSN", "grade": "YBG205",
             "manufacturer_notes": "Known marking/context: M20-M40. Previously used with a 50 mm 45-degree 4-tip face mill. No suffix or application details inferred.",
             "confidence": "low", "needs_review": True,
@@ -444,11 +469,11 @@ def seed_default_library(database) -> None:
         {"seed_key": "tool.round-insert.52-bull", "display_name": "52 Bull", "manufacturer": "", "tool_type": "Round Insert / Bull Cutter", "diameter_mm": 52, "insert_count": 5, "linked_insert_id": insert_ids["insert.zccct.rdkw12.ybg205h"], "notes": "Shop shorthand: (52 Bull)", "confidence": "high", "needs_review": False},
         {"seed_key": "tool.round-insert.66-bull", "display_name": "66 Bull", "manufacturer": "", "tool_type": "Round Insert / Bull Cutter", "diameter_mm": 66, "insert_count": 6, "linked_insert_id": insert_ids["insert.zccct.rdkw12.ybg205h"], "notes": "Shop shorthand: (66 Bull)", "confidence": "high", "needs_review": False},
         {"seed_key": "tool.itc.cupro.8mm-ball", "display_name": "ITC 8mm Cupro Ball Nose", "manufacturer": "ITC", "tool_type": "Ball Nose End Mill", "diameter_mm": 8, "tool_material": "Carbide", "flute_count": 2, "coating": "Cupro (ITC)", "notes": "Cupro is the recorded ITC coating name; no chemistry inferred.", "confidence": "high", "needs_review": False},
-        {"seed_key": "tool.widia.40041000t022s.10mm.review", "display_name": "10mm WIDIA 40041000T022S — needs review", "manufacturer": "WIDIA", "manufacturer_part_number": "40041000T022S", "tool_type": "End Mill", "diameter_mm": 10, "confidence": "low", "needs_review": True},
-        {"seed_key": "tool.widia.w401m10005szt.10mm.review", "display_name": "10mm WIDIA W401M10005SZT — needs review", "manufacturer": "WIDIA", "model_code": "W401M10005SZT", "tool_type": "End Mill", "diameter_mm": 10, "notes": "Known marking: WU20PE. Exact interpretation is unverified; do not assume it is a coating or tool material.", "confidence": "low", "needs_review": True},
+        {"seed_key": "tool.widia.40041000t022s.10mm.review", "display_name": "10mm WIDIA 40041000T022S", "manufacturer": "WIDIA", "manufacturer_part_number": "40041000T022S", "tool_type": "End Mill", "diameter_mm": 10, "confidence": "low", "needs_review": True},
+        {"seed_key": "tool.widia.w401m10005szt.10mm.review", "display_name": "10mm WIDIA W401M10005SZT", "manufacturer": "WIDIA", "model_code": "W401M10005SZT", "tool_type": "End Mill", "diameter_mm": 10, "notes": "Known marking: WU20PE. Exact interpretation is unverified; do not assume it is a coating or tool material.", "confidence": "low", "needs_review": True},
         {"seed_key": "tool.solid-carbide.16mm.4f", "display_name": "16mm Carbide 4-Flute End Mill", "tool_type": "End Mill", "diameter_mm": 16, "tool_material": "Carbide", "flute_count": 4, "confidence": "medium", "needs_review": True, "notes": "Manufacturer and product identity unknown; historical 90 mm stickout is job setup, not tool identity."},
         {"seed_key": "tool.solid-carbide.5mm.3f.altin", "display_name": "5mm Carbide 3-Flute End Mill", "tool_type": "End Mill", "diameter_mm": 5, "tool_material": "Carbide", "flute_count": 3, "coating": "AlTiN", "confidence": "medium", "needs_review": True, "notes": "Manufacturer and product identity unknown."},
-        {"seed_key": "tool.solid-carbide.12mm.chamfer.review", "display_name": "12mm Carbide Chamfer Tool — needs review", "tool_type": "Chamfer Mill", "diameter_mm": 12, "tool_material": "Carbide", "confidence": "low", "needs_review": True},
+        {"seed_key": "tool.solid-carbide.12mm.chamfer.review", "display_name": "12mm Carbide Chamfer Tool", "tool_type": "Chamfer Mill", "diameter_mm": 12, "tool_material": "Carbide", "confidence": "low", "needs_review": True},
         {"seed_key": "tool.zccct.50mm.45deg.face-mill.review", "display_name": "50mm 45deg Face Mill", "tool_type": "Face Mill", "diameter_mm": 50, "insert_count": 4, "approach_angle_deg": 45, "linked_insert_id": insert_ids["insert.zccct.seht1204afsn.review"], "notes": "Unknown body manufacturer/model. Historical use: soft D2 skin cutting on a Wadkin V8 ISO50; the machine/holder are job history, not inherent tool facts.", "confidence": "low", "needs_review": True},
     )
     for record in tools:

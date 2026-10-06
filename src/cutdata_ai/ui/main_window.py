@@ -538,6 +538,12 @@ class MainWindow(QMainWindow):
             widget.currentTextChanged.connect(self._guided_tool_override_changed)
             tool_form.addRow(label, widget)
             tool_form.setRowVisible(widget, False)
+        self.guided_needs_review = QCheckBox("Needs review (tool details not yet checked)")
+        self.guided_needs_review.setObjectName("guidedNeedsReview")
+        self.guided_needs_review.setToolTip("Saved on the Tool Library record. Untick once the tool's details have been checked.")
+        self.guided_needs_review.clicked.connect(self._guided_review_clicked)
+        tool_form.addRow(self.guided_needs_review)
+        tool_form.setRowVisible(self.guided_needs_review, False)
         content_layout.addWidget(tool_group)
 
         self.temporary_tool_group = QGroupBox("Temporary / unsaved tool")
@@ -787,6 +793,20 @@ class MainWindow(QMainWindow):
                     widget.setCurrentIndex(widget.count() - 1)
             widget.blockSignals(False)
 
+    def _guided_review_clicked(self, checked: bool) -> None:
+        tool_id = self.guided_tool_combo.currentData()
+        if not self._guided_snapshot or tool_id in (None, "temporary"):
+            return
+        self.tool_library.set_needs_review(int(tool_id), checked)
+        self._guided_snapshot = self.tool_library.tool_snapshot(int(tool_id)) or {}
+        # The record's revision moved; keep this job's material, coating and thread.
+        key = self._guided_tool_key()
+        if self._override_tool_key:
+            self._override_tool_key = key
+        if self._thread_tool_key:
+            self._thread_tool_key = key
+        self._save_calculator_state()
+
     def _guided_tool_override_changed(self, _text: str = "") -> None:
         if not self._restoring_state:
             self._save_calculator_state()
@@ -824,8 +844,7 @@ class MainWindow(QMainWindow):
         self.guided_tool_combo.clear()
         self.guided_tool_combo.addItem("Select a saved tool…", None)
         for tool in self.tool_library.list_tools():
-            status = " · NEEDS REVIEW" if tool.get("needs_review") else ""
-            self.guided_tool_combo.addItem(str(tool.get("display_name", "Workshop tool")) + status, int(tool["id"]))
+            self.guided_tool_combo.addItem(str(tool.get("display_name", "Workshop tool")), int(tool["id"]))
         self.guided_tool_combo.addItem("Temporary / unsaved tool", "temporary")
         if hasattr(self, "manual_library_combo"):
             self.manual_library_combo.clear()
@@ -900,10 +919,12 @@ class MainWindow(QMainWindow):
             if insert_text:
                 dimensions.append(insert_text)
             notes = self.tool_library.observations_for_tool(int(value), limit=6)
-            suffix = " · NEEDS REVIEW" if snapshot.get("needs_review") or (insert and insert.get("needs_review")) else ""
+            suffix = " · linked insert needs review" if insert and insert.get("needs_review") else ""
             note_suffix = f" · {len(notes)} workshop note(s)" if notes else ""
             details = " · ".join(part for part in (identity, ", ".join(dimensions)) if part)
             self.guided_tool_facts.setText((details or "Tool details incomplete") + suffix + note_suffix)
+        self.guided_tool_form.setRowVisible(self.guided_needs_review, bool(self._guided_snapshot))
+        self.guided_needs_review.setChecked(bool(self._guided_snapshot.get("needs_review")))
         self._sync_tool_overrides()
         self._autofill_thread()
         self._apply_job_type_filter()

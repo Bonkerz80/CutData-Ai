@@ -36,17 +36,17 @@ def test_seed_records_are_exact_normalized_and_reviewable(tmp_path):
     assert inserts["WIDIA XDPT17 WP25PM"]["manufacturer_part_number"] == "5987949"
     assert inserts["WIDIA XDPT17 WP25PM"]["coating"] == ""
     assert inserts["ZCC RDKW12 YBG205H"]["coating"] == ""
-    assert inserts["ZCC-CT SEHT1204AFSN — needs review"]["needs_review"] is True
+    assert inserts["ZCC-CT SEHT1204AFSN"]["needs_review"] is True
     for name in (
-        "10mm WIDIA 40041000T022S — needs review",
-        "10mm WIDIA W401M10005SZT — needs review",
+        "10mm WIDIA 40041000T022S",
+        "10mm WIDIA W401M10005SZT",
         "16mm Carbide 4-Flute End Mill",
         "5mm Carbide 3-Flute End Mill",
-        "12mm Carbide Chamfer Tool — needs review",
+        "12mm Carbide Chamfer Tool",
         "50mm 45deg Face Mill",
     ):
         assert tools[name]["needs_review"] is True
-    unknown_marking = tools["10mm WIDIA W401M10005SZT — needs review"]
+    unknown_marking = tools["10mm WIDIA W401M10005SZT"]
     assert unknown_marking["coating"] == ""
     assert "WU20PE" in unknown_marking["notes"]
     assert tools["16mm Carbide 4-Flute End Mill"]["default_stickout_mm"] is None
