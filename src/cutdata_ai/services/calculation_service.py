@@ -193,8 +193,23 @@ def validate_and_correct_result(
     if request.workflow_mode == "guided":
         if not result.recommended_operation or not result.recommended_strategy:
             raise StructuredResponseError("AI-guided result must include a recommended operation and strategy")
-        if not result.recommended_pass_count or not result.pass_plan:
-            raise StructuredResponseError("AI-guided result must include a pass count and at least one pass-plan stage")
+        if not corrected.pass_plan and tool_family(request.tool_type) in {"drill", "reamer", "tap"}:
+            # A hole-making cycle is one stage; restate the headline values
+            # rather than reject an answer that left the plan empty.
+            corrected.pass_plan = [{
+                "stage": result.recommended_operation, "passes": 1,
+                "operation": result.recommended_operation,
+                "axial_doc_mm": None, "radial_engagement_mm": None, "stepover_mm": None,
+                "stock_to_leave_mm": None, "rpm": result.rpm, "feed_mm_min": result.feed_mm_min,
+                "notes": "",
+            }]
+        if not corrected.pass_plan:
+            raise StructuredResponseError("AI-guided result must include at least one pass-plan stage")
+        if not corrected.recommended_pass_count:
+            # The schema lets the model leave the total null when it is not
+            # meaningful (drilling, tapping); count it from the plan instead.
+            stage_passes = [stage.get("passes") for stage in corrected.pass_plan]
+            corrected.recommended_pass_count = sum(int(value) for value in stage_passes if value) or len(corrected.pass_plan)
     family = tool_family(request.tool_type)
     p = request.parameters
     diameter = _number(p, "diameter_mm", "cutter_diameter_mm")

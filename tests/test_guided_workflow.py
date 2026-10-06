@@ -597,3 +597,39 @@ def test_tool_overrides_and_new_boxes_survive_restart_and_recent(qapp, tmp_path)
         second.close()
         second.deleteLater()
         qapp.processEvents()
+
+
+def test_guided_hole_result_without_pass_count_or_plan_is_accepted():
+    machine = MachineProfile("HAAS VF-2", 8000, 5000)
+
+    def guided(tool_type, **parameters):
+        return MachiningRequest(
+            machine="HAAS VF-2", material="Mild Steel", tool_type=tool_type, operation="AI Guided",
+            parameters=dict(parameters, diameter_mm=20), workflow_mode="guided",
+        )
+
+    drill = MachiningResult(
+        rpm=600, feed_mm_min=120, feed_per_rev_mm=0.2, peck_recommended=False,
+        recommended_operation="Drilling", recommended_strategy="Open out the pilot hole",
+    )
+    corrected, _ = validate_and_correct_result(drill, guided("Drill", hole_depth_mm=40), machine)
+    assert corrected.recommended_pass_count == 1
+    assert corrected.pass_plan[0]["rpm"] == 600 and corrected.pass_plan[0]["feed_mm_min"] == 120
+
+    # A plan without a total is counted from its stages.
+    planned = MachiningResult(
+        rpm=2000, feed_mm_min=800, feed_per_tooth_mm=0.1,
+        recommended_operation="Roughing Waterline", recommended_strategy="Rough then finish",
+        pass_plan=[{"stage": "Rough", "passes": 3, "rpm": 2000, "feed_mm_min": 800},
+                   {"stage": "Finish", "passes": None, "rpm": 2000, "feed_mm_min": 600}],
+    )
+    corrected, _ = validate_and_correct_result(planned, guided("End Mill", flute_count=4), machine)
+    assert corrected.recommended_pass_count == 3
+
+    # Milling still needs a plan from the AI.
+    bare = MachiningResult(
+        rpm=2000, feed_mm_min=800, feed_per_tooth_mm=0.1,
+        recommended_operation="Roughing Waterline", recommended_strategy="Rough",
+    )
+    with pytest.raises(StructuredResponseError):
+        validate_and_correct_result(bare, guided("End Mill", flute_count=4), machine)
