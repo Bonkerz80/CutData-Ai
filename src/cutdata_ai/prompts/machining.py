@@ -79,6 +79,24 @@ Core rules:
 """
 
 
+def _request_notes(normalized: dict[str, Any]) -> list[str]:
+    """Plain-language reminders for inputs that are easy to overlook."""
+
+    parameters = normalized.get("parameters")
+    parameters = parameters if isinstance(parameters, dict) else {}
+    try:
+        pilot = float(parameters.get("existing_pilot_hole_diameter_mm") or 0)
+    except (TypeError, ValueError):
+        pilot = 0.0
+    if pilot <= 0:
+        return []
+    return [
+        f"The hole is already pilot-drilled to {pilot:g} mm, so this tool only opens it out; "
+        "it is not drilling from solid. Take that into account for feed per revolution, "
+        "the peck decision and the warnings."
+    ]
+
+
 def build_user_prompt(request: MachiningRequest, machine: MachineProfile) -> str:
     normalized = normalize_request(request)
     context: dict[str, Any] = {
@@ -94,6 +112,9 @@ def build_user_prompt(request: MachiningRequest, machine: MachineProfile) -> str
         "prompt_version": PROMPT_VERSION,
         "schema_version": SCHEMA_VERSION,
     }
+    notes = _request_notes(normalized)
+    if notes:
+        context["request_notes"] = notes
     return (
         "Make the complete practical CNC recommendation for this exact structured request. "
         "For AI Guided, choose the operation and machining values; do not ask for DOC when the supplied job geometry is enough. "
@@ -158,14 +179,18 @@ def build_verification_prompt(
 ) -> str:
     """Prepare a compact independent review of one candidate recommendation."""
 
+    normalized = normalize_request(request)
     context = {
-        "request": normalize_request(request),
+        "request": normalized,
         "machine_profile": machine.to_dict(),
         "candidate_result": candidate_result,
         "sources_used_by_first_pass": research_sources,
         "large_changes_from_nearby_history": continuity_findings,
         "local_arithmetic_or_limit_corrections": validation_corrections,
     }
+    notes = _request_notes(normalized)
+    if notes:
+        context["request_notes"] = notes
     return (
         "Review this candidate independently. Search for a second source if an "
         "important tool/material fact is still uncertain. Do not rewrite the "

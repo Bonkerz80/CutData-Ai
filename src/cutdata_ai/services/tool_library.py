@@ -254,6 +254,12 @@ class ToolLibraryService:
         )
         snapshot = {field: tool.get(field) for field in fields}
         snapshot["library_id"] = tool["id"]
+        # Thread facts are only added when recorded, so other tools keep the
+        # same snapshot (and cached results) as before.
+        details = tool.get("details") or {}
+        for key in ("thread_size", "thread_pitch_mm"):
+            if details.get(key) not in (None, ""):
+                snapshot[key] = details[key]
         snapshot["insert"] = None
         if tool.get("linked_insert_id"):
             insert = self.get_insert(int(tool["linked_insert_id"]))

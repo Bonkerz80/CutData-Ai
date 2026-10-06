@@ -4,6 +4,8 @@ The product name lives here so branding can be changed without searching the
 UI and service code.
 """
 
+import re
+
 from .branding import (
     APP_NAME,
     ASSET_DIR,
@@ -30,7 +32,7 @@ from .branding import (
 )
 
 
-APP_VERSION = "0.2.5"
+APP_VERSION = "0.2.6"
 PROMPT_VERSION = "2026-09-28.1"
 SCHEMA_VERSION = "3"
 DEFAULT_MODEL = "gpt-6.1-sol"
@@ -198,6 +200,17 @@ LEGACY_TOOL_FAMILY_BY_TYPE = {
 
 DRILL_TOOL_MATERIALS = ("HSS", "HSS-Co / Cobalt", "Carbide", "Indexable")
 MILL_TOOL_MATERIALS = ("Carbide", "HSS", "HSS-Co / Cobalt")
+HOLE_TOOL_MATERIALS = ("HSS", "HSS-Co / Cobalt", "Carbide")
+# ISO metric coarse pitches by nominal diameter (mm).
+METRIC_COARSE_PITCH_MM = {
+    1.6: 0.35, 2: 0.4, 2.5: 0.45, 3: 0.5, 4: 0.7, 5: 0.8, 6: 1.0, 8: 1.25,
+    10: 1.5, 12: 1.75, 14: 2.0, 16: 2.0, 18: 2.5, 20: 2.5, 22: 2.5, 24: 3.0,
+    27: 3.0, 30: 3.5, 33: 3.5, 36: 4.0,
+}
+_METRIC_THREAD = re.compile(
+    r"(?<![A-Za-z0-9])M\s*(\d+(?:\.\d+)?)(?:\s*[xX×*]\s*(\d+(?:\.\d+)?))?(?![\d.])",
+    re.IGNORECASE,
+)
 COATINGS = (
     "Uncoated",
     "TiN",
@@ -223,6 +236,67 @@ def tool_family(tool_type: str) -> str:
             if label.casefold() == value:
                 return family
     return "end_mill"
+
+
+def tool_materials_for(tool_type: str) -> tuple[str, ...]:
+    """Tool materials offered for a tool label; empty when the insert decides."""
+
+    family = tool_family(tool_type)
+    if family == "indexable":
+        return ()
+    if family == "drill":
+        return DRILL_TOOL_MATERIALS
+    if family in {"reamer", "tap"}:
+        return HOLE_TOOL_MATERIALS
+    return MILL_TOOL_MATERIALS
+
+
+def metric_thread_from_text(text: object) -> tuple[str, float | None] | None:
+    """Read 'M10' or 'M10x1.25' out of free text as (size label, pitch)."""
+
+    match = _METRIC_THREAD.search(str(text or ""))
+    if not match:
+        return None
+    nominal = float(match.group(1))
+    if not 1.0 <= nominal <= 100.0:
+        return None
+    pitch = float(match.group(2)) if match.group(2) else None
+    if pitch is not None and not 0.0 < pitch < nominal:
+        pitch = None
+    return f"M{nominal:g}", pitch
+
+
+def metric_thread_for_tool(snapshot: dict) -> tuple[str, float | None]:
+    """Best known thread size and pitch for a library tap or thread mill.
+
+    Recorded library values win, then a size written in the tool's name or
+    code, then the nominal diameter. A missing pitch falls back to the
+    standard coarse pitch.
+    """
+
+    size = str(snapshot.get("thread_size") or "").strip()
+    try:
+        pitch = float(snapshot.get("thread_pitch_mm") or 0) or None
+    except (TypeError, ValueError):
+        pitch = None
+    parsed = metric_thread_from_text(size) if size else None
+    if not size:
+        for key in ("display_name", "model_code", "product_family"):
+            parsed = metric_thread_from_text(snapshot.get(key))
+            if parsed:
+                break
+        if parsed is None:
+            try:
+                diameter = float(snapshot.get("diameter_mm") or 0)
+            except (TypeError, ValueError):
+                diameter = 0.0
+            if diameter in METRIC_COARSE_PITCH_MM:
+                parsed = (f"M{diameter:g}", None)
+        if parsed:
+            size = parsed[0]
+    if parsed and pitch is None:
+        pitch = parsed[1] or METRIC_COARSE_PITCH_MM.get(float(parsed[0][1:]))
+    return size, pitch
 
 
 def compatible_tool_type(tool_type: str) -> str | None:

@@ -38,7 +38,11 @@ calculation history or the machining cache.
 
 AI Guided asks for the actual cutter and the essentials of the physical job,
 such as profile depth or plate thickness, stock allowance, and finish. Job
-types are limited to those the selected tool can do. Coolant, cut priority,
+types are limited to those the selected tool can do, and each tool shows only
+its own boxes: a drill asks for hole depth, through/blind and an optional pilot
+hole; a tap fills thread size and pitch from the library tool. Tool material
+and coating start from the library record and can be changed for one
+calculation without altering the library. Coolant, cut priority,
 stickout, setup rigidity, entry access, and other optional facts live in a
 collapsed **Setup details** section; they keep their last values and are sent
 with every request. Optional constraints remain under Advanced Overrides. It intentionally does not require DOC,
@@ -182,7 +186,7 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.2.5.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.2.6.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
 ### Previous-release baseline: 0.1.13
 

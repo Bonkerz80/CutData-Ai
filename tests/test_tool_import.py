@@ -216,3 +216,35 @@ def test_add_tool_wizard_values_save_to_library(qapp, tmp_path):
     assert record["insert_count"] == 3
     assert record["flute_count"] is None
     wizard.close()
+
+
+def test_wizard_and_editor_record_thread_details_for_taps(qapp, tmp_path):
+    from src.cutdata_ai.database.database import Database as _Database
+    from src.cutdata_ai.services.tool_library import ToolLibraryService as _Library
+    from src.cutdata_ai.ui.tool_library_dialog import RecordEditorDialog
+
+    wizard = AddToolWizard([])
+    wizard.show()
+    wizard._show_page(1)
+    assert wizard.inputs["thread_size"].isHidden()
+    wizard.tool_type.setCurrentText("Tap")
+    wizard._show_page(1)
+    assert not wizard.inputs["thread_size"].isHidden()
+    wizard.inputs["display_name"].setText("M10 fine tap")
+    wizard.inputs["thread_size"].setText("M10")
+    wizard.inputs["thread_pitch_mm"].setText("1.25")
+    values = wizard.values()
+    assert values["details"] == {"thread_size": "M10", "thread_pitch_mm": 1.25}
+    assert "thread_size" not in values
+
+    library = _Library(_Database(tmp_path / "threads.sqlite3"))
+    saved = library.add_tool(values)
+    assert library.tool_snapshot(saved["id"])["thread_pitch_mm"] == 1.25
+
+    editor = RecordEditorDialog("tool", saved, [])
+    assert editor.detail_inputs["thread_size"].text() == "M10"
+    editor.detail_inputs["thread_pitch_mm"].setText("")
+    updated = library.update_tool(saved["id"], editor.values())
+    assert updated["details"] == {"thread_size": "M10"}
+    assert "thread_pitch_mm" not in library.tool_snapshot(saved["id"])
+    wizard.close()

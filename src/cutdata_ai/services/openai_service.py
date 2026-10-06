@@ -567,6 +567,7 @@ class MockOpenAIService:
             depth = float(p.get("hole_depth_mm", 0.0) or 0.0)
             fpr = diameter * (0.006 if "hss" in tool_material.casefold() else 0.009)
             deep = depth > diameter * 4.0 if diameter else False
+            pilot = float(p.get("existing_pilot_hole_diameter_mm", 0.0) or 0.0)
             if deep:
                 fpr *= 0.75
             payload.update(
@@ -575,7 +576,8 @@ class MockOpenAIService:
                 peck_mm=round(min(max(diameter * 1.5, 2.0), max(depth / 3.0, 2.0)), 2) if deep else None,
                 peck_recommended=deep,
                 recommended_cycle="G83 peck cycle" if deep else "G81 drilling cycle",
-                notes=payload["notes"] + (["Hole depth is deep relative to diameter; use chip-clearing pecks."] if deep else []),
+                notes=payload["notes"] + (["Hole depth is deep relative to diameter; use chip-clearing pecks."] if deep else [])
+                + ([f"Opening out an existing Ø{pilot:g} mm pilot hole."] if pilot else []),
             )
         elif family == "reamer":
             depth = float(p.get("hole_depth_mm", 0.0) or 0.0)

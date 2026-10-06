@@ -56,8 +56,12 @@ from ..config.constants import (
     TOOL_TYPES,
     WINDOWS_ICON_PATH,
     compatible_tool_type,
+    metric_thread_for_tool,
+    metric_thread_from_text,
+    METRIC_COARSE_PITCH_MM,
     model_display_name,
     tool_family,
+    tool_materials_for,
 )
 from ..config.operations import (
     ENCY_OPERATIONS,
@@ -217,6 +221,10 @@ class MainWindow(QMainWindow):
         self.tool_library = ToolLibraryService(database)
         self.workflow_mode = "guided"
         self._guided_snapshot: dict[str, Any] = {}
+        # (tool id, library revision) the per-job tool boxes were last filled for.
+        self._override_tool_key: tuple[Any, Any] | None = None
+        self._thread_tool_key: tuple[Any, Any] | None = None
+        self._overrides_shown = False
         self._restoring_state = True
         self._thread: QThread | None = None
         self._worker: CalculationWorker | None = None
@@ -519,6 +527,17 @@ class MainWindow(QMainWindow):
         self.guided_tool_facts.setWordWrap(True)
         self.guided_tool_facts.setObjectName("hint")
         tool_form.addRow(self.guided_tool_facts)
+        # Start from the library record; a change applies to this job only.
+        self.guided_tool_form = tool_form
+        self.guided_material = QComboBox()
+        self.guided_material.setObjectName("guidedToolMaterial")
+        self.guided_coating = QComboBox()
+        self.guided_coating.setObjectName("guidedToolCoating")
+        for label, widget in (("Tool material", self.guided_material), ("Coating", self.guided_coating)):
+            widget.setToolTip("Filled from the Tool Library. A change here applies to this calculation only.")
+            widget.currentTextChanged.connect(self._guided_tool_override_changed)
+            tool_form.addRow(label, widget)
+            tool_form.setRowVisible(widget, False)
         content_layout.addWidget(tool_group)
 
         self.temporary_tool_group = QGroupBox("Temporary / unsaved tool")
@@ -595,12 +614,17 @@ class MainWindow(QMainWindow):
         self.stock_remaining = add_number("stock_remaining_mm", "Stock remaining for 3D finish (mm)")
         self.surface_type = add_choice("surface_type", "Surface type", ["Unknown", "Steep wall", "Shallow surface", "Flat land", "Freeform / 3D"])
         self.finish_requirement = add_choice("finish_requirement", "Finish required", ["Not specified", "Rough only", "Finish only", "Rough + Finish"])
-        self.hole_diameter = add_number("hole_diameter_mm", "Required hole diameter (mm)", 1000.0, 3)
-        self.hole_depth = add_number("hole_depth_mm", "Hole depth (mm)", 5000.0, 2)
-        self.existing_hole = add_number("existing_hole_diameter_mm", "Existing hole diameter (mm)", 1000.0, 3)
+        self.chamfer_size = add_number("chamfer_size_mm", "Chamfer size (mm)", 100.0, 3, 0.1)
+        self.hole_diameter = add_number("hole_diameter_mm", "Hole diameter to chamfer (mm, 0 = edge)", 1000.0, 3)
         self.thread_size = add_text("thread_size", "Thread size", "e.g. M12")
+        self.thread_size.textEdited.connect(self._thread_size_edited)
         self.thread_pitch = add_number("pitch_mm", "Thread pitch (mm)", 25.0, 4, 0.25)
         self.thread_depth = add_number("thread_depth_mm", "Thread depth (mm)", 1000.0, 2)
+        self.tap_type = add_choice("tap_type", "Tap type", ["Cutting tap", "Form tap"])
+        self.hole_depth = add_number("hole_depth_mm", "Hole depth (mm)", 5000.0, 2)
+        self.hole_type = add_choice("hole_type", "Hole", ["Through hole", "Blind hole"])
+        self.pilot_hole = add_number("existing_pilot_hole_diameter_mm", "Pilot hole diameter (mm, 0 = none)", 1000.0, 3)
+        self.existing_hole = add_number("existing_hole_diameter_mm", "Existing hole diameter (mm)", 1000.0, 3)
         target_form = optional_form
         self.open_closed = add_choice("open_closed", "Contour / pocket", ["Not applicable", "Open", "Closed"])
         self.smallest_corner = add_number("smallest_corner_radius_mm", "Smallest internal corner radius (mm)")
@@ -726,6 +750,72 @@ class MainWindow(QMainWindow):
             self.guided_job_type.blockSignals(False)
         self._guided_job_changed(self.guided_job_type.currentText())
 
+    def _guided_tool_key(self) -> tuple[Any, Any] | None:
+        if not self._guided_snapshot:
+            return None
+        return (self.guided_tool_combo.currentData(), self._guided_snapshot.get("revision"))
+
+    def _sync_tool_overrides(self) -> None:
+        """Show material and coating for a library tool, starting from its record."""
+
+        snapshot = self._guided_snapshot
+        materials = tool_materials_for(str(snapshot.get("tool_type") or "")) if snapshot else ()
+        self._overrides_shown = bool(materials)
+        for widget in (self.guided_material, self.guided_coating):
+            self.guided_tool_form.setRowVisible(widget, self._overrides_shown)
+        key = self._guided_tool_key() if self._overrides_shown else None
+        if key == self._override_tool_key:
+            # The same tool at the same revision keeps what the user chose.
+            return
+        self._override_tool_key = key
+        if key is None:
+            return
+        for widget, choices, recorded in (
+            (self.guided_material, materials, snapshot.get("tool_material")),
+            (self.guided_coating, COATINGS, snapshot.get("coating")),
+        ):
+            widget.blockSignals(True)
+            widget.clear()
+            widget.addItem("Unknown")
+            widget.addItems(list(choices))
+            recorded = str(recorded or "").strip()
+            if recorded:
+                self._set_combo_casefold(widget, recorded)
+                if widget.currentText().casefold() != recorded.casefold():
+                    # Keep a recorded value the standard list does not have.
+                    widget.addItem(recorded)
+                    widget.setCurrentIndex(widget.count() - 1)
+            widget.blockSignals(False)
+
+    def _guided_tool_override_changed(self, _text: str = "") -> None:
+        if not self._restoring_state:
+            self._save_calculator_state()
+
+    def _autofill_thread(self) -> None:
+        """Fill thread size and pitch when a library tap or thread mill is picked."""
+
+        snapshot = self._guided_snapshot
+        threaded = str(snapshot.get("tool_type") or "").strip().casefold() in {"tap", "thread mill"}
+        key = self._guided_tool_key() if threaded else None
+        if key == self._thread_tool_key:
+            return
+        self._thread_tool_key = key
+        if key is None or (self._restoring_state and self.thread_size.text().strip()):
+            return
+        size, pitch = metric_thread_for_tool(snapshot)
+        if size:
+            self.thread_size.setText(size)
+        if pitch:
+            self.thread_pitch.setValue(pitch)
+
+    def _thread_size_edited(self, text: str) -> None:
+        parsed = metric_thread_from_text(text)
+        if not parsed:
+            return
+        pitch = parsed[1] or METRIC_COARSE_PITCH_MM.get(float(parsed[0][1:]))
+        if pitch:
+            self.thread_pitch.setValue(pitch)
+
     def _refresh_guided_tools(self) -> None:
         if not hasattr(self, "guided_tool_combo"):
             return
@@ -772,6 +862,9 @@ class MainWindow(QMainWindow):
             "insert_code": insert.get("designation"),
             "insert_grade": insert.get("grade"),
         }
+        if tool_type == "Tap":
+            # Size first: choosing a size sets the coarse pitch.
+            facts["thread_size"], facts["pitch_mm"] = metric_thread_for_tool(snapshot)
         # Unknown library facts leave the existing form values untouched.
         self.pages[tool_family(self.tool_combo.currentText())].load_values(
             {key: value for key, value in facts.items() if value not in (None, "")}
@@ -811,6 +904,8 @@ class MainWindow(QMainWindow):
             note_suffix = f" · {len(notes)} workshop note(s)" if notes else ""
             details = " · ".join(part for part in (identity, ", ".join(dimensions)) if part)
             self.guided_tool_facts.setText((details or "Tool details incomplete") + suffix + note_suffix)
+        self._sync_tool_overrides()
+        self._autofill_thread()
         self._apply_job_type_filter()
         if not self._restoring_state:
             self._save_calculator_state()
@@ -834,13 +929,17 @@ class MainWindow(QMainWindow):
             visible |= {"job_depth_mm", "stock_on_side_mm", "open_closed", "entry_access", "finish_requirement", "target_finish_allowance_mm"}
             self.guided_rows["job_depth_mm"][0].setText("Required slot depth (mm)")
         elif "drill hole" in job:
-            visible |= {"hole_diameter_mm", "hole_depth_mm", "entry_access"}
+            visible |= {"hole_depth_mm"}
+            if self._guided_tool_type().casefold() != "spot drill / centre drill":
+                visible |= {"hole_type", "existing_pilot_hole_diameter_mm"}
         elif "ream hole" in job:
-            visible |= {"hole_diameter_mm", "hole_depth_mm", "existing_hole_diameter_mm", "entry_access"}
-        elif "tap thread" in job or "thread mill" in job:
-            visible |= {"thread_size", "pitch_mm", "thread_depth_mm", "hole_diameter_mm", "entry_access"}
+            visible |= {"hole_depth_mm", "hole_type", "existing_hole_diameter_mm"}
+        elif "tap thread" in job:
+            visible |= {"thread_size", "pitch_mm", "thread_depth_mm", "hole_type", "tap_type"}
+        elif "thread mill" in job:
+            visible |= {"thread_size", "pitch_mm", "thread_depth_mm", "hole_type", "existing_hole_diameter_mm", "entry_access"}
         elif "chamfer" in job:
-            visible |= {"hole_diameter_mm", "entry_access"}
+            visible |= {"chamfer_size_mm", "hole_diameter_mm", "entry_access"}
         else:
             visible |= {"job_depth_mm", "stock_on_side_mm", "stock_to_remove_mm", "open_closed", "finish_requirement", "target_finish_allowance_mm", "entry_access", "surface_type"}
             self.guided_rows["job_depth_mm"][0].setText("Required job depth / thickness (mm)")
@@ -913,6 +1012,18 @@ class MainWindow(QMainWindow):
 
     def _collect_guided_request(self) -> MachiningRequest:
         snapshot = self._selected_tool_snapshot()
+        if snapshot.get("library_id") and self._overrides_shown:
+            snapshot = dict(snapshot)
+            for key, widget in (("tool_material", self.guided_material), ("coating", self.guided_coating)):
+                chosen = "" if widget.currentText() == "Unknown" else widget.currentText()
+                if chosen.casefold() != str(snapshot.get(key) or "").casefold():
+                    provenance = dict(snapshot.get("field_provenance") or {})
+                    provenance[key] = {
+                        "status": "user_supplied", "confidence": "high",
+                        "evidence": "Set on the job form for this calculation",
+                    }
+                    snapshot["field_provenance"] = provenance
+                    snapshot[key] = chosen
         tool_type = str(snapshot.get("tool_type") or "End Mill")
         family = tool_family(tool_type)
         parameters: dict[str, Any] = {
@@ -1395,6 +1506,12 @@ class MainWindow(QMainWindow):
             "job_description": self.guided_job_description.text().strip(),
             "fields": {key: widget_value(widget) for key, widget in self.guided_fields.items()},
             "advanced": {key: widget_value(widget) for key, widget in self.advanced_fields.items()},
+            "tool_overrides": {
+                "tool_id": self._override_tool_key[0],
+                "revision": self._override_tool_key[1],
+                "tool_material": self.guided_material.currentText(),
+                "coating": self.guided_coating.currentText(),
+            } if self._override_tool_key else {},
             "temporary": {
                 "tool_type": self.temporary_tool_type.currentText(),
                 "diameter_mm": self.temporary_diameter.value(),
@@ -1530,6 +1647,13 @@ class MainWindow(QMainWindow):
             tool_index = next((i for i in range(self.guided_tool_combo.count()) if self.guided_tool_combo.itemData(i) == tool_id), -1)
             if tool_index >= 0:
                 self.guided_tool_combo.setCurrentIndex(tool_index)
+            overrides = guided.get("tool_overrides", {})
+            if (
+                isinstance(overrides, dict) and self._override_tool_key
+                and (overrides.get("tool_id"), overrides.get("revision")) == self._override_tool_key
+            ):
+                self._set_combo_casefold(self.guided_material, str(overrides.get("tool_material", "")))
+                self._set_combo_casefold(self.guided_coating, str(overrides.get("coating", "")))
 
         workflow_mode = str(global_state.get("workflow_mode", "guided"))
         mode_index = self.workflow_combo.findData(workflow_mode)
@@ -1823,6 +1947,9 @@ class MainWindow(QMainWindow):
             self.temporary_manufacturer.setText(str(snapshot.get("manufacturer") or ""))
         self.guided_tool_combo.setCurrentIndex(index)
         self._guided_tool_changed()
+        if self._overrides_shown:
+            for key, widget in (("tool_material", self.guided_material), ("coating", self.guided_coating)):
+                self._set_combo_casefold(widget, str(snapshot.get(key) or "Unknown"))
 
         job_type = str(parameters.get("job_type", ""))
         job_type, legacy_surface = _LEGACY_JOB_TYPES.get(job_type.strip().casefold(), (job_type, ""))

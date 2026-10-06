@@ -142,6 +142,11 @@ def validate_request(request: MachiningRequest, machine: MachineProfile) -> tupl
     if request.hardness_hrc is not None and request.hardness_hrc > 70:
         warnings.append("Hardness is above the usual HRC range; confirm the material specification.")
 
+    if family == "drill" and diameter:
+        pilot = _number(p, "existing_pilot_hole_diameter_mm")
+        if pilot is not None and pilot >= diameter:
+            errors.append("Pilot hole must be smaller than the drill diameter.")
+
     if family == "reamer" and diameter:
         existing = _number(p, "existing_hole_diameter_mm")
         if existing is not None and existing > 0:

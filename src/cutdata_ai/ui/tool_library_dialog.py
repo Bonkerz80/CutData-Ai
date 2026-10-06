@@ -59,7 +59,24 @@ _LABELS = {
     "source_type": "Source type", "source_url": "Source URL", "source_title": "Source page title",
     "source_retrieved_at": "Retrieved / imported at", "source_text": "Retained user-provided text",
     "confidence": "Record confidence", "needs_review": "Needs review",
+    "thread_size": "Thread size (taps / thread mills)", "thread_pitch_mm": "Thread pitch (mm)",
 }
+# Tap / thread mill facts kept in the record's details.
+_THREAD_DETAIL_FIELDS = ("thread_size", "thread_pitch_mm")
+
+
+def _thread_details(raw: dict[str, str]) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    size = raw.get("thread_size", "").strip()
+    if size:
+        details["thread_size"] = size
+    try:
+        pitch = float(raw.get("thread_pitch_mm", "") or 0)
+    except ValueError:
+        pitch = 0.0
+    if pitch > 0:
+        details["thread_pitch_mm"] = pitch
+    return details
 _FLOAT_FIELDS = {
     "diameter_mm", "effective_cutting_diameter_mm", "corner_radius_mm", "ball_radius_mm",
     "shank_diameter_mm", "cutting_edge_length_mm", "overall_length_mm", "default_stickout_mm",
@@ -139,6 +156,18 @@ class RecordEditorDialog(QDialog):
             widget.setObjectName("libraryField_" + key)
             form.addRow(label, widget)
             self.inputs[key] = widget
+        self.detail_inputs: dict[str, QLineEdit] = {}
+        if entity_type == "tool":
+            stored = self.record.get("details") or {}
+            for key, placeholder in (("thread_size", "e.g. M10"), ("thread_pitch_mm", "Blank = standard coarse pitch")):
+                widget = QLineEdit()
+                widget.setObjectName("libraryField_" + key)
+                widget.setPlaceholderText(placeholder)
+                widget.setText(str(stored.get(key) or ""))
+                if key == "thread_pitch_mm":
+                    widget.setValidator(QDoubleValidator(0.0, 25.0, 4, widget))
+                form.insertRow(form.getWidgetPosition(self.inputs["coating"])[0] + 1 + len(self.detail_inputs), _LABELS[key], widget)
+                self.detail_inputs[key] = widget
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -162,7 +191,12 @@ class RecordEditorDialog(QDialog):
             if key == "iso_material_groups":
                 value = [part.strip() for part in str(value).replace(";", ",").split(",") if part.strip()]
             values[key] = value
-        values["details"] = dict(self.record.get("details") or {})
+        details = dict(self.record.get("details") or {})
+        if self.detail_inputs:
+            for key in _THREAD_DETAIL_FIELDS:
+                details.pop(key, None)
+            details.update(_thread_details({key: widget.text() for key, widget in self.detail_inputs.items()}))
+        values["details"] = details
         return values
 
 
@@ -213,6 +247,8 @@ class AddToolWizard(QDialog):
             ("model_code", "Optional"),
             ("flute_count", "Optional"),
             ("tool_material", "Optional"),
+            ("thread_size", "e.g. M10"),
+            ("thread_pitch_mm", "Blank = standard coarse pitch"),
             ("insert_count", "Optional"),
             ("corner_radius_mm", "Optional"),
             ("ball_radius_mm", "Optional"),
@@ -221,8 +257,8 @@ class AddToolWizard(QDialog):
             widget.setObjectName("wizardField_" + key)
             widget.setPlaceholderText(placeholder)
             widget.setText(str(self.initial.get(key) or ""))
-            if key in _FLOAT_FIELDS | _INT_FIELDS:
-                widget.setValidator(QDoubleValidator(0.0, 100000.0, 3, widget))
+            if key in _FLOAT_FIELDS | _INT_FIELDS or key == "thread_pitch_mm":
+                widget.setValidator(QDoubleValidator(0.0, 100000.0, 4, widget))
             form.addRow(_LABELS.get(key, key), widget)
             self.inputs[key] = widget
         self.linked_insert = QComboBox()
@@ -268,6 +304,8 @@ class AddToolWizard(QDialog):
         visible = {"display_name", "diameter_mm", "manufacturer", "model_code"}
         if tool in self._FLUTED:
             visible.update({"flute_count", "tool_material"})
+        if tool in {"Tap", "Thread Mill"}:
+            visible.update(_THREAD_DETAIL_FIELDS)
         if tool in self._INDEXABLE:
             visible.update({"insert_count", "linked_insert_id"})
         if tool == "Ball Nose End Mill":
@@ -295,6 +333,9 @@ class AddToolWizard(QDialog):
             raw = widget.currentData() if isinstance(widget, QComboBox) else widget.text().strip()
             if raw not in (None, ""):
                 values[key] = raw
+        details = _thread_details({key: str(values.pop(key, "")) for key in _THREAD_DETAIL_FIELDS})
+        if details:
+            values["details"] = details
         return values
 
 

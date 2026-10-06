@@ -83,7 +83,7 @@ def test_job_type_shows_only_relevant_inputs_and_preserves_switched_values(windo
     window.guided_job_type.setCurrentText("Drill hole")
     qapp.processEvents()
     assert window.hole_depth.isVisible()
-    assert window.hole_diameter.isVisible()
+    assert not window.hole_diameter.isVisible()
     assert not window.job_depth.isVisible()
     assert not window.stock_on_side.isVisible()
     window.hole_depth.setValue(20)
@@ -401,3 +401,199 @@ def test_manual_form_can_be_filled_from_a_library_tool(window):
     assert request.parameters["insert_count"] == 2
     assert request.parameters["insert_code"] == "XDPT170408PESRMM"
     assert request.parameters["insert_grade"] == "WP25PM"
+
+
+def _add_and_select(window, **values):
+    tool = ToolLibraryService(window.database).add_tool(values)
+    window._refresh_guided_tools()
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+    return tool
+
+
+def _visible_job_fields(window):
+    return {key for key, (label, _widget) in window.guided_rows.items() if not label.isHidden()}
+
+
+def test_library_drill_offers_pilot_hole_material_and_coating(window, qapp):
+    from src.cutdata_ai.services.calculation_service import validate_request
+
+    window.show()
+    tool = _add_and_select(
+        window, display_name="20mm Drill", tool_type="Drill", diameter_mm=20,
+        tool_material="HSS-Co / Cobalt", coating="TiN",
+    )
+    qapp.processEvents()
+    assert window.guided_job_type.currentText() == "Drill hole"
+    assert window.guided_material.isVisible() and window.guided_coating.isVisible()
+    assert window.guided_material.currentText() == "HSS-Co / Cobalt"
+    assert window.guided_coating.currentText() == "TiN"
+    assert window.guided_material.findText("Indexable") >= 0
+    assert window.pilot_hole.isVisible() and window.hole_type.isVisible()
+    assert not window.hole_diameter.isVisible() and not window.entry_access.isVisible()
+
+    window.hole_depth.setValue(40)
+    window.pilot_hole.setValue(8)
+    window.hole_type.setCurrentText("Blind hole")
+    request = window._collect_request()
+    assert request.parameters["existing_pilot_hole_diameter_mm"] == 8
+    assert request.parameters["hole_type"] == "Blind hole"
+    assert request.parameters["tool_material"] == "HSS-Co / Cobalt"
+    assert request.parameters["coating"] == "TiN"
+    assert "hole_diameter_mm" not in request.parameters
+    assert request.tool_snapshot == ToolLibraryService(window.database).tool_snapshot(tool["id"])
+    assert validate_request(request, window._machine())[0] == []
+
+    # A change on the form applies to this job only.
+    window.guided_material.setCurrentText("Carbide")
+    window.guided_coating.setCurrentText("Unknown")
+    request = window._collect_request()
+    assert request.parameters["tool_material"] == "Carbide"
+    assert request.parameters["coating"] == "Unknown"
+    assert request.tool_snapshot["tool_material"] == "Carbide"
+    assert request.tool_snapshot["field_provenance"]["tool_material"]["status"] == "user_supplied"
+    stored = ToolLibraryService(window.database).get_tool(tool["id"])
+    assert stored["tool_material"] == "HSS-Co / Cobalt" and stored["coating"] == "TiN"
+
+    # Reopening the library keeps the choice; picking another tool resets it.
+    window._refresh_guided_tools()
+    assert window.guided_material.currentText() == "Carbide"
+    other = _add_and_select(window, display_name="12mm Drill", tool_type="Drill", diameter_mm=12)
+    assert window.guided_material.currentText() == "Unknown"
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tool["id"]))
+    assert window.guided_material.currentText() == "HSS-Co / Cobalt"
+    assert other["id"] != tool["id"]
+
+    window.pilot_hole.setValue(20)
+    errors, _warnings = validate_request(window._collect_request(), window._machine())
+    assert "Pilot hole must be smaller than the drill diameter." in errors
+
+    window.pilot_hole.setValue(0)
+    assert "existing_pilot_hole_diameter_mm" not in window._collect_request().parameters
+
+
+def test_each_tool_shows_only_its_own_boxes(window, qapp):
+    window.show()
+    common = {"coolant_type", "cut_priority", "stock_condition", "stickout_mm", "setup_rigidity", "setup_notes"}
+    expected = {
+        "Drill": {"hole_depth_mm", "hole_type", "existing_pilot_hole_diameter_mm"},
+        "Reamer": {"hole_depth_mm", "hole_type", "existing_hole_diameter_mm"},
+        "Tap": {"thread_size", "pitch_mm", "thread_depth_mm", "hole_type", "tap_type"},
+        "Thread Mill": {"thread_size", "pitch_mm", "thread_depth_mm", "hole_type", "existing_hole_diameter_mm", "entry_access"},
+        "Chamfer Mill": {"chamfer_size_mm", "hole_diameter_mm", "entry_access"},
+    }
+    for tool_type, fields in expected.items():
+        _add_and_select(window, display_name=f"Test {tool_type}", tool_type=tool_type, diameter_mm=10, tool_material="HSS")
+        qapp.processEvents()
+        assert _visible_job_fields(window) == fields | common, tool_type
+        assert window.guided_material.isVisible(), tool_type
+        assert window.guided_material.currentText() == "HSS", tool_type
+
+    # A spot drill asked to drill has no pilot hole.
+    _add_and_select(window, display_name="Spot", tool_type="Spot Drill / Centre Drill", diameter_mm=10)
+    window.guided_job_type.setCurrentText("Drill hole")
+    assert _visible_job_fields(window) == {"hole_depth_mm"} | common
+
+    # Insert cutters take grade and coating from the linked insert.
+    tipped = next(item for item in ToolLibraryService(window.database).list_tools() if item["display_name"] == "25 Tipped")
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData(tipped["id"]))
+    qapp.processEvents()
+    assert not window.guided_material.isVisible() and not window.guided_coating.isVisible()
+    assert window._collect_request().tool_snapshot == ToolLibraryService(window.database).tool_snapshot(tipped["id"])
+
+    window.guided_tool_combo.setCurrentIndex(window.guided_tool_combo.findData("temporary"))
+    qapp.processEvents()
+    assert not window.guided_material.isVisible()
+    assert window.temporary_material.isVisible()
+
+
+def test_selecting_a_tap_fills_thread_size_and_pitch(window, qapp):
+    _add_and_select(window, display_name="M10 Spiral Tap", tool_type="Tap", diameter_mm=10, tool_material="HSS-Co / Cobalt")
+    assert window.guided_job_type.currentText() == "Tap thread"
+    assert window.thread_size.text() == "M10"
+    assert window.thread_pitch.value() == 1.5
+    window.thread_depth.setValue(18)
+    request = window._collect_request()
+    assert request.parameters["thread_size"] == "M10"
+    assert request.parameters["pitch_mm"] == 1.5
+    assert request.parameters["tap_type"] == "Cutting tap"
+    assert request.parameters["hole_type"] == "Through hole"
+    assert "hole_diameter_mm" not in request.parameters
+
+    # A user's pitch survives a library refresh of the same tool.
+    window.thread_pitch.setValue(1.0)
+    window._refresh_guided_tools()
+    assert window.thread_pitch.value() == 1.0
+
+    _add_and_select(window, display_name="Fine tap M12x1.25", tool_type="Tap", diameter_mm=12)
+    assert (window.thread_size.text(), window.thread_pitch.value()) == ("M12", 1.25)
+
+    _add_and_select(window, display_name="Tap, size by diameter", tool_type="Tap", diameter_mm=8)
+    assert (window.thread_size.text(), window.thread_pitch.value()) == ("M8", 1.25)
+
+    recorded = _add_and_select(
+        window, display_name="Recorded tap", tool_type="Tap", diameter_mm=16,
+        details={"thread_size": "M16", "thread_pitch_mm": 1.5},
+    )
+    assert (window.thread_size.text(), window.thread_pitch.value()) == ("M16", 1.5)
+    assert window._collect_request().tool_snapshot["thread_pitch_mm"] == 1.5
+    assert recorded["details"]["thread_size"] == "M16"
+
+    # Typing a size by hand sets the standard pitch.
+    _select_temporary(window, "Tap", 6)
+    window.thread_size.setText("")
+    window.thread_size.textEdited.emit("M6")
+    assert window.thread_pitch.value() == 1.0
+
+
+def test_metric_thread_helpers_and_pilot_prompt_note():
+    from src.cutdata_ai.config.constants import metric_thread_for_tool, metric_thread_from_text, tool_materials_for
+    from src.cutdata_ai.prompts.machining import build_user_prompt
+
+    assert metric_thread_from_text("M10") == ("M10", None)
+    assert metric_thread_from_text("hss m8 x 1.0 tap") == ("M8", 1.0)
+    assert metric_thread_from_text("10mm WIDIA W401M10005SZT") is None
+    assert metric_thread_from_text("16mm Carbide") is None
+    assert metric_thread_for_tool({"display_name": "Odd tap", "diameter_mm": 11}) == ("", None)
+    assert metric_thread_for_tool({"thread_size": "M10x1.25"}) == ("M10x1.25", 1.25)
+    assert tool_materials_for("Face Mill") == ()
+    assert "Indexable" in tool_materials_for("Drill")
+
+    machine = MachineProfile(name="Test", max_rpm=8000, max_feed_mm_min=5000)
+    parameters = {"diameter_mm": 20, "hole_depth_mm": 40, "job_type": "Drill hole"}
+    plain = MachiningRequest(machine="Test", material="Mild Steel", tool_type="Drill", operation="AI Guided", parameters=dict(parameters), workflow_mode="guided")
+    assert "request_notes" not in build_user_prompt(plain, machine)
+    piloted = MachiningRequest(machine="Test", material="Mild Steel", tool_type="Drill", operation="AI Guided", parameters=dict(parameters, existing_pilot_hole_diameter_mm=8), workflow_mode="guided")
+    assert "already pilot-drilled to 8 mm" in build_user_prompt(piloted, machine)
+
+
+def test_tool_overrides_and_new_boxes_survive_restart_and_recent(qapp, tmp_path):
+    database = Database(tmp_path / "persist.sqlite3")
+    first = MainWindow(database)
+    tool = _add_and_select(first, display_name="20mm Drill", tool_type="Drill", diameter_mm=20, tool_material="HSS", coating="TiN")
+    first.guided_material.setCurrentText("Carbide")
+    first.pilot_hole.setValue(8)
+    first.hole_depth.setValue(40)
+    request = first._collect_request()
+    outcome = CalculationService(database, MockOpenAIService()).calculate(request, first._machine())
+    first._save_calculator_state()
+    first.close()
+    first.deleteLater()
+    qapp.processEvents()
+
+    second = MainWindow(database)
+    try:
+        assert second.guided_tool_combo.currentData() == tool["id"]
+        assert second.guided_material.currentText() == "Carbide"
+        assert second.guided_coating.currentText() == "TiN"
+        assert second.pilot_hole.value() == 8
+
+        second.guided_material.setCurrentText("HSS")
+        second.pilot_hole.setValue(0)
+        second._load_guided_inputs(outcome.normalized_request)
+        assert second.guided_material.currentText() == "Carbide"
+        assert second.pilot_hole.value() == 8
+        assert second.hole_depth.value() == 40
+    finally:
+        second.close()
+        second.deleteLater()
+        qapp.processEvents()

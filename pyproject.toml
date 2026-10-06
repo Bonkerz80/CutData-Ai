@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cutdata-ai"
-version = "0.2.5"
+version = "0.2.6"
 description = "AI-guided CNC machining adviser with a persistent workshop tool library"
 requires-python = ">=3.10"
 dependencies = [
