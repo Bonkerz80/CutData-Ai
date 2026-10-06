@@ -827,6 +827,8 @@ class MainWindow(QMainWindow):
             self.thread_size.setText(size)
         if pitch:
             self.thread_pitch.setValue(pitch)
+        if snapshot.get("tap_type"):
+            self._set_combo_casefold(self.tap_type, str(snapshot["tap_type"]))
 
     def _thread_size_edited(self, text: str) -> None:
         parsed = metric_thread_from_text(text)
@@ -1152,7 +1154,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Save tool", str(exc))
             return
         initial = {
-            "display_name": f"{snapshot.get('diameter_mm') or ''} mm {snapshot['tool_type']}".strip(),
             "manufacturer": snapshot.get("manufacturer", ""),
             "tool_type": snapshot["tool_type"],
             "diameter_mm": snapshot.get("diameter_mm"),
@@ -1163,7 +1164,7 @@ class MainWindow(QMainWindow):
             "needs_review": True,
             "confidence": "low",
         }
-        dialog = AddToolWizard(self.tool_library.list_inserts(), self, initial)
+        dialog = AddToolWizard(self.tool_library.list_inserts(), self, initial, self.tool_library)
         if dialog.exec() == QDialog.Accepted:
             try:
                 saved = self.tool_library.add_tool(dialog.values())

@@ -128,6 +128,16 @@ class ToolLibraryService:
         with self.database.connect() as connection:
             return [_decode_row(row) for row in connection.execute(query, params).fetchall()]
 
+    def list_manufacturers(self) -> list[str]:
+        """Makers already recorded on tools or inserts, for pick lists."""
+
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT manufacturer FROM tool_library WHERE manufacturer<>'' "
+                "UNION SELECT manufacturer FROM tool_inserts WHERE manufacturer<>''"
+            ).fetchall()
+        return sorted({str(row[0]).strip() for row in rows if str(row[0]).strip()}, key=str.casefold)
+
     def get_tool(self, tool_id: int) -> dict[str, Any] | None:
         with self.database.connect() as connection:
             return _decode_row(connection.execute("SELECT * FROM tool_library WHERE id=?", (int(tool_id),)).fetchone())
@@ -264,7 +274,7 @@ class ToolLibraryService:
         # Thread facts are only added when recorded, so other tools keep the
         # same snapshot (and cached results) as before.
         details = tool.get("details") or {}
-        for key in ("thread_size", "thread_pitch_mm"):
+        for key in ("thread_size", "thread_pitch_mm", "tap_type", "point_angle_deg"):
             if details.get(key) not in (None, ""):
                 snapshot[key] = details[key]
         snapshot["insert"] = None

@@ -27,7 +27,14 @@ incomplete; later startup migrations do not overwrite workshop edits. Known
 facts and their field-level provenance are retained, and unknown values are
 left blank rather than guessed.
 
-Use the library editor for manual add, edit, duplicate, and delete. AI import
+The library window lists tools on the left and edits the selected record on
+the right; a change is saved when the box is left, another record is picked,
+or the window closes. Only the boxes for the chosen tool type are shown,
+material and coating are pick lists, new tools start with typical values for
+their type and are named from the entered facts, and part numbers and source
+details sit in a collapsed **Catalogue details** section. **ADD** offers a
+single tool, a set of sizes of one tool, an insert, or an AI look-up; an insert
+can also be created from the cutter that uses it. AI import
 can start from a description, pasted text, a manufacturer URL, or a web search.
 For manufacturer lookup, web search is restricted to the supported
 manufacturer's domain. Imported values, evidence status, and any surfaced
@@ -186,7 +193,7 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.2.8.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.2.9.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
 ### Previous-release baseline: 0.1.13
 

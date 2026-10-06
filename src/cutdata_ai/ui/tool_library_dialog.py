@@ -1,342 +1,175 @@
-"""Workshop-friendly editor for cutter bodies, inserts and observations."""
+"""Workshop-friendly Tool Library: a list beside a type-shaped editor."""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QDoubleValidator
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QPlainTextEdit, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QPlainTextEdit, QScrollArea,
+    QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..config.constants import DEFAULT_MODEL, TOOL_TYPES, model_display_name
+from ..config.constants import COATINGS, DEFAULT_MODEL, TOOL_TYPES, model_display_name, tool_materials_for
 from ..services.tool_library import INSERT_FIELDS, TOOL_FIELDS, ToolLibraryService
+from .tool_editor import (
+    InsertPanel, ToolPanel, default_tool_name, parse_size_list, short_tool_type, tool_type_fields,
+    TOOL_TYPE_DEFAULTS,
+)
 from .tool_import_dialog import ToolImportDialog
-from .widgets import double_spin
+from .widgets import double_spin, integer_spin
 
 
-_TOOL_EDIT_FIELDS = (
-    "display_name", "manufacturer", "product_family", "model_code",
-    "manufacturer_part_number", "tool_type", "diameter_mm",
-    "effective_cutting_diameter_mm", "flute_count", "insert_count",
-    "linked_insert_id", "tool_material", "coating", "corner_radius_mm",
-    "ball_radius_mm", "shank_diameter_mm", "cutting_edge_length_mm",
-    "overall_length_mm", "default_stickout_mm", "approach_angle_deg", "hand",
-    "holder_interface", "notes", "source_type", "source_url", "source_title",
-    "source_retrieved_at", "source_text", "confidence", "needs_review",
-)
-_INSERT_EDIT_FIELDS = (
-    "display_name", "manufacturer", "product_family", "designation",
-    "iso_designation", "ansi_designation", "manufacturer_part_number", "grade",
-    "geometry", "chipbreaker", "shape", "insert_size", "inscribed_circle_mm",
-    "thickness_mm", "corner_radius_mm", "cutting_edge_count", "coating", "substrate",
-    "iso_material_groups", "manufacturer_application", "manufacturer_notes",
-    "source_type", "source_url", "source_title", "source_retrieved_at", "source_text",
-    "confidence", "needs_review",
-)
-_LABELS = {
-    "display_name": "Workshop name", "product_family": "Product family",
-    "model_code": "Model / code", "manufacturer_part_number": "Manufacturer part number",
-    "tool_type": "Tool family", "diameter_mm": "Diameter (mm)",
-    "effective_cutting_diameter_mm": "Effective cutting diameter (mm)",
-    "flute_count": "Flutes", "insert_count": "Insert pockets / tips", "linked_insert_id": "Insert / tip",
-    "tool_material": "Tool material", "coating": "Coating (as recorded)",
-    "corner_radius_mm": "Corner radius (mm)", "ball_radius_mm": "Ball radius (mm)",
-    "shank_diameter_mm": "Shank diameter (mm)", "cutting_edge_length_mm": "Cutting edge length (mm)",
-    "overall_length_mm": "Overall length (mm)", "default_stickout_mm": "Preferred stickout (mm, optional)",
-    "approach_angle_deg": "Approach angle (degrees)", "hand": "Hand", "holder_interface": "Holder interface",
-    "notes": "Workshop notes", "designation": "Designation", "iso_designation": "ISO designation",
-    "ansi_designation": "ANSI designation", "grade": "Grade", "geometry": "Geometry",
-    "chipbreaker": "Chipbreaker", "shape": "Shape", "insert_size": "Insert size",
-    "inscribed_circle_mm": "Nominal insert diameter / IC (mm)", "thickness_mm": "Thickness (mm)",
-    "cutting_edge_count": "Known cutting edges", "substrate": "Substrate",
-    "iso_material_groups": "ISO material groups (comma separated)",
-    "manufacturer_application": "Manufacturer application", "manufacturer_notes": "Catalogue / insert notes",
-    "source_type": "Source type", "source_url": "Source URL", "source_title": "Source page title",
-    "source_retrieved_at": "Retrieved / imported at", "source_text": "Retained user-provided text",
-    "confidence": "Record confidence", "needs_review": "Needs review",
-    "thread_size": "Thread size (taps / thread mills)", "thread_pitch_mm": "Thread pitch (mm)",
-}
-# Tap / thread mill facts kept in the record's details.
-_THREAD_DETAIL_FIELDS = ("thread_size", "thread_pitch_mm")
+def _scrolled(panel: QWidget) -> QScrollArea:
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QScrollArea.NoFrame)
+    holder = QWidget()
+    layout = QVBoxLayout(holder)
+    layout.setContentsMargins(2, 2, 8, 2)
+    layout.addWidget(panel)
+    scroll.setWidget(holder)
+    return scroll
 
 
-def _thread_details(raw: dict[str, str]) -> dict[str, Any]:
-    details: dict[str, Any] = {}
-    size = raw.get("thread_size", "").strip()
-    if size:
-        details["thread_size"] = size
-    try:
-        pitch = float(raw.get("thread_pitch_mm", "") or 0)
-    except ValueError:
-        pitch = 0.0
-    if pitch > 0:
-        details["thread_pitch_mm"] = pitch
-    return details
-_FLOAT_FIELDS = {
-    "diameter_mm", "effective_cutting_diameter_mm", "corner_radius_mm", "ball_radius_mm",
-    "shank_diameter_mm", "cutting_edge_length_mm", "overall_length_mm", "default_stickout_mm",
-    "approach_angle_deg", "inscribed_circle_mm", "thickness_mm",
-}
-_INT_FIELDS = {"flute_count", "insert_count", "cutting_edge_count"}
-_MULTILINE = {"notes", "manufacturer_notes", "source_text", "manufacturer_application"}
-_STATUS_COLORS = {
-    "user_supplied": "#dff3e6", "source_confirmed": "#dbeafe",
-    "ai_inferred": "#fff1cc", "unknown": "#eceff1",
-}
+class _RecordDialog(QDialog):
+    """A new record entered on the same panel the library uses for editing."""
 
-
-class RecordEditorDialog(QDialog):
-    """Edit one library record without mixing the insert and body entities."""
-
-    def __init__(self, entity_type: str, record: dict[str, Any] | None, inserts: list[dict[str, Any]], parent=None):
+    def __init__(self, title: str, panel, parent=None):
         super().__init__(parent)
-        self.entity_type = entity_type
-        self.record = dict(record or {})
-        self.inputs: dict[str, QWidget] = {}
-        self.setWindowTitle("Add tool" if record is None and entity_type == "tool" else "Add insert / tip" if record is None else "Edit workshop record")
-        self.resize(650, 720)
+        self.setWindowTitle(title)
+        self.resize(520, 600)
+        self.panel = panel
         root = QVBoxLayout(self)
-        intro = QLabel("Record only known facts. Leave unverified catalogue details blank and mark incomplete records for review.")
-        intro.setWordWrap(True)
-        intro.setObjectName("hint")
-        root.addWidget(intro)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        body = QWidget()
-        form = QFormLayout(body)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        fields = _TOOL_EDIT_FIELDS if entity_type == "tool" else _INSERT_EDIT_FIELDS
-        for key in fields:
-            label = _LABELS.get(key, key.replace("_", " ").title())
-            if key == "needs_review":
-                widget = QCheckBox("Needs review")
-                widget.setChecked(bool(self.record.get(key, True)))
-            elif key == "confidence":
-                widget = QComboBox()
-                widget.addItems(["unknown", "low", "medium", "high"])
-                widget.setCurrentText(str(self.record.get(key, "unknown")))
-            elif key == "source_type":
-                widget = QComboBox()
-                widget.addItems(["user_supplied", "manual", "pasted_text", "manufacturer_webpage", "web_search", "unknown"])
-                widget.setEditable(True)
-                widget.setCurrentText(str(self.record.get(key, "user_supplied")))
-            elif key == "tool_type":
-                widget = QComboBox()
-                widget.addItems(list(dict.fromkeys((*TOOL_TYPES, "Round Insert / Bull Cutter", "Chamfer Tool", "Other / unknown"))))
-                widget.setEditable(True)
-                widget.setCurrentText(str(self.record.get(key, "End Mill")))
-            elif key == "linked_insert_id":
-                widget = QComboBox()
-                widget.addItem("No linked insert", None)
-                for insert in inserts:
-                    suffix = " · " + " / ".join(part for part in (insert.get("designation"), insert.get("grade")) if part)
-                    widget.addItem(str(insert.get("display_name", "Insert")) + suffix, int(insert["id"]))
-                target = self.record.get(key)
-                for index in range(widget.count()):
-                    if widget.itemData(index) == target:
-                        widget.setCurrentIndex(index)
-                        break
-            elif key in _MULTILINE:
-                widget = QPlainTextEdit()
-                widget.setPlainText(str(self.record.get(key) or ""))
-                widget.setMaximumHeight(90)
-            else:
-                widget = QLineEdit()
-                current = self.record.get(key)
-                if key == "iso_material_groups" and isinstance(current, (list, tuple)):
-                    current = ", ".join(str(item) for item in current)
-                widget.setText("" if current is None else str(current))
-                if key in _FLOAT_FIELDS or key in _INT_FIELDS:
-                    widget.setValidator(QDoubleValidator(0.0, 100000.0, 5, widget))
-            widget.setObjectName("libraryField_" + key)
-            form.addRow(label, widget)
-            self.inputs[key] = widget
-        self.detail_inputs: dict[str, QLineEdit] = {}
-        if entity_type == "tool":
-            stored = self.record.get("details") or {}
-            for key, placeholder in (("thread_size", "e.g. M10"), ("thread_pitch_mm", "Blank = standard coarse pitch")):
-                widget = QLineEdit()
-                widget.setObjectName("libraryField_" + key)
-                widget.setPlaceholderText(placeholder)
-                widget.setText(str(stored.get(key) or ""))
-                if key == "thread_pitch_mm":
-                    widget.setValidator(QDoubleValidator(0.0, 25.0, 4, widget))
-                form.insertRow(form.getWidgetPosition(self.inputs["coating"])[0] + 1 + len(self.detail_inputs), _LABELS[key], widget)
-                self.detail_inputs[key] = widget
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
+        root.addWidget(_scrolled(panel), 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
     def values(self) -> dict[str, Any]:
-        values: dict[str, Any] = {}
-        for key, widget in self.inputs.items():
-            if isinstance(widget, QCheckBox):
-                value: Any = widget.isChecked()
-            elif isinstance(widget, QComboBox):
-                value = widget.currentData() if key == "linked_insert_id" else widget.currentText().strip()
-            elif isinstance(widget, QPlainTextEdit):
-                value = widget.toPlainText().strip()
-            else:
-                value = widget.text().strip()
-            if key in _FLOAT_FIELDS | _INT_FIELDS:
-                value = value if value else None
-            if key == "iso_material_groups":
-                value = [part.strip() for part in str(value).replace(";", ",").split(",") if part.strip()]
-            values[key] = value
-        details = dict(self.record.get("details") or {})
-        if self.detail_inputs:
-            for key in _THREAD_DETAIL_FIELDS:
-                details.pop(key, None)
-            details.update(_thread_details({key: widget.text() for key, widget in self.detail_inputs.items()}))
-        values["details"] = details
-        return values
+        return self.panel.values()
 
 
-class AddToolWizard(QDialog):
-    """A short, type-first path for recording the facts needed to identify a tool."""
+class AddToolDialog(_RecordDialog):
+    """Add one tool: pick the type and only that type's boxes are asked for."""
 
-    _INDEXABLE = {"Face Mill", "Indexable End Mill", "Round Insert / Bull Cutter"}
-    _FLUTED = {"Drill", "End Mill", "Ball Nose End Mill", "Bull Nose / Corner Radius End Mill",
-               "Reamer", "Tap", "Thread Mill", "Countersink", "Chamfer Mill", "Spot Drill / Centre Drill"}
+    def __init__(self, inserts: list[dict[str, Any]] | None = None, parent=None,
+                 initial: dict[str, Any] | None = None, library: ToolLibraryService | None = None):
+        panel = ToolPanel(library, inserts)
+        super().__init__("Add tool", panel, parent)
+        panel.load(None, initial)
+        self.tool_type = panel.widgets["tool_type"]
 
-    def __init__(self, inserts: list[dict[str, Any]], parent=None, initial: dict[str, Any] | None = None):
+
+# Name used by earlier releases.
+AddToolWizard = AddToolDialog
+
+
+class AddInsertDialog(_RecordDialog):
+    def __init__(self, library: ToolLibraryService | None = None, parent=None, initial: dict[str, Any] | None = None):
+        panel = InsertPanel(library)
+        super().__init__("Add insert / tip", panel, parent)
+        panel.load(None, initial)
+
+
+class AddSetDialog(QDialog):
+    """Add several sizes of the same tool in one go."""
+
+    TYPES = tuple(item for item in TOOL_TYPES if tool_materials_for(item) and item != "Thread Mill")
+
+    def __init__(self, library: ToolLibraryService | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add tool — guided setup")
-        self.resize(490, 420)
-        self.initial = dict(initial or {})
+        self.setWindowTitle("Add a set of tools")
+        self.resize(520, 360)
         root = QVBoxLayout(self)
-        self.pages = QStackedWidget()
-        root.addWidget(self.pages, 1)
-
-        first = QWidget()
-        first_layout = QVBoxLayout(first)
-        heading = QLabel("1 of 2 · What type of tool is it?")
-        heading.setObjectName("sectionTitle")
-        first_layout.addWidget(heading)
-        self.tool_type = QComboBox()
-        self.tool_type.setObjectName("wizardToolType")
-        self.tool_type.addItems(TOOL_TYPES)
-        self.tool_type.setCurrentText(str(self.initial.get("tool_type") or "End Mill"))
-        first_layout.addWidget(self.tool_type)
-        tip = QLabel("Choose the closest type. You can add more detail later with Edit or Enrich with AI.")
-        tip.setWordWrap(True)
-        first_layout.addWidget(tip)
-        first_layout.addStretch(1)
-        self.pages.addWidget(first)
-
-        second = QWidget()
-        second_layout = QVBoxLayout(second)
-        self.details_heading = QLabel("2 of 2 · Tool details")
-        self.details_heading.setObjectName("sectionTitle")
-        second_layout.addWidget(self.details_heading)
+        hint = QLabel("Enter the details once and list the sizes. One tool is added for each size.")
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        root.addWidget(hint)
         form = QFormLayout()
         self.form = form
-        self.inputs: dict[str, QWidget] = {}
-        for key, placeholder in (
-            ("display_name", "A name you'll recognise"),
-            ("diameter_mm", "e.g. 25"),
-            ("manufacturer", "Optional"),
-            ("model_code", "Optional"),
-            ("flute_count", "Optional"),
-            ("tool_material", "Optional"),
-            ("thread_size", "e.g. M10"),
-            ("thread_pitch_mm", "Blank = standard coarse pitch"),
-            ("insert_count", "Optional"),
-            ("corner_radius_mm", "Optional"),
-            ("ball_radius_mm", "Optional"),
-        ):
-            widget = QLineEdit()
-            widget.setObjectName("wizardField_" + key)
-            widget.setPlaceholderText(placeholder)
-            widget.setText(str(self.initial.get(key) or ""))
-            if key in _FLOAT_FIELDS | _INT_FIELDS or key == "thread_pitch_mm":
-                widget.setValidator(QDoubleValidator(0.0, 100000.0, 4, widget))
-            form.addRow(_LABELS.get(key, key), widget)
-            self.inputs[key] = widget
-        self.linked_insert = QComboBox()
-        self.linked_insert.setObjectName("wizardField_linked_insert_id")
-        self.linked_insert.addItem("No linked insert yet", None)
-        for insert in inserts:
-            self.linked_insert.addItem(str(insert.get("display_name") or "Insert / tip"), int(insert["id"]))
-        form.addRow("Insert / tip", self.linked_insert)
-        self.inputs["linked_insert_id"] = self.linked_insert
-        second_layout.addLayout(form)
-        second_layout.addStretch(1)
-        self.pages.addWidget(second)
+        self.tool_type = QComboBox()
+        self.tool_type.addItems(list(self.TYPES))
+        form.addRow("Tool type", self.tool_type)
+        self.sizes = QLineEdit()
+        form.addRow("Sizes", self.sizes)
+        self.material = QComboBox()
+        form.addRow("Tool material", self.material)
+        self.coating = QComboBox()
+        self.coating.addItems(["Unknown", *COATINGS])
+        self.coating.setEditable(True)
+        form.addRow("Coating", self.coating)
+        self.flutes = integer_spin(maximum=200)
+        form.addRow("Flutes", self.flutes)
+        self.manufacturer = QComboBox()
+        self.manufacturer.setEditable(True)
+        self.manufacturer.addItems([""] + (library.list_manufacturers() if library is not None else []))
+        form.addRow("Manufacturer", self.manufacturer)
+        root.addLayout(form)
+        self.preview = QLabel()
+        self.preview.setWordWrap(True)
+        root.addWidget(self.preview)
+        root.addStretch(1)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        root.addWidget(self.buttons)
+        self.tool_type.currentTextChanged.connect(self._type_changed)
+        for signal in (self.sizes.textChanged, self.material.currentTextChanged, self.coating.currentTextChanged,
+                       self.flutes.valueChanged, self.manufacturer.currentTextChanged):
+            signal.connect(self._update_preview)
+        self._type_changed(self.tool_type.currentText())
 
-        controls = QHBoxLayout()
-        self.back_button = QPushButton("Back")
-        self.next_button = QPushButton("Next")
-        self.save_button = QPushButton("Save tool")
-        cancel_button = QPushButton("Cancel")
-        controls.addWidget(self.back_button)
-        controls.addStretch(1)
-        controls.addWidget(self.next_button)
-        controls.addWidget(self.save_button)
-        controls.addWidget(cancel_button)
-        root.addLayout(controls)
-        self.back_button.clicked.connect(lambda: self._show_page(0))
-        self.next_button.clicked.connect(lambda: self._show_page(1))
-        self.save_button.clicked.connect(self._save)
-        cancel_button.clicked.connect(self.reject)
-        self.tool_type.currentTextChanged.connect(self._update_fields)
-        self._show_page(0)
+    def _type_changed(self, tool_type: str) -> None:
+        defaults = TOOL_TYPE_DEFAULTS.get(tool_type, {})
+        self.material.blockSignals(True)
+        self.material.clear()
+        self.material.addItems(["Unknown", *tool_materials_for(tool_type)])
+        self.material.setCurrentText(str(defaults.get("tool_material", "Unknown")))
+        self.material.blockSignals(False)
+        fluted = "flute_count" in tool_type_fields(tool_type)
+        self.form.setRowVisible(self.flutes, fluted)
+        self.flutes.setValue(int(defaults.get("flute_count", 0)) if fluted else 0)
+        self.sizes.setPlaceholderText("e.g. M6, M8, M10, M12x1.25" if tool_type == "Tap" else "e.g. 5, 6.8, 8.5, 10.2")
+        self._update_preview()
 
-    def _show_page(self, page: int) -> None:
-        self.pages.setCurrentIndex(page)
-        self.back_button.setVisible(page == 1)
-        self.next_button.setVisible(page == 0)
-        self.save_button.setVisible(page == 1)
-        if page == 1:
-            self.details_heading.setText(f"2 of 2 · {self.tool_type.currentText()} details")
-            self._update_fields()
+    def tools(self) -> list[dict[str, Any]]:
+        tool_type = self.tool_type.currentText()
+        sizes, _rejected = parse_size_list(self.sizes.text(), tool_type)
+        defaults = TOOL_TYPE_DEFAULTS.get(tool_type, {})
+        shown = tool_type_fields(tool_type)
+        material = "" if self.material.currentText() == "Unknown" else self.material.currentText()
+        coating = self.coating.currentText().strip()
+        records = []
+        for size in sizes:
+            details = {key: size[key] for key in ("thread_size", "thread_pitch_mm") if size.get(key)}
+            for key in ("tap_type", "point_angle_deg"):
+                if key in shown and key in defaults:
+                    details[key] = defaults[key]
+            record: dict[str, Any] = {
+                "tool_type": tool_type, "diameter_mm": size["diameter_mm"],
+                "tool_material": material, "coating": "" if coating == "Unknown" else coating,
+                "manufacturer": self.manufacturer.currentText().strip(),
+                "flute_count": self.flutes.value() or None if "flute_count" in shown else None,
+                "details": details, "needs_review": False, "source_type": "user_supplied",
+            }
+            record["display_name"] = default_tool_name({**record, **details})
+            records.append(record)
+        return records
 
-    def _update_fields(self) -> None:
-        tool = self.tool_type.currentText()
-        visible = {"display_name", "diameter_mm", "manufacturer", "model_code"}
-        if tool in self._FLUTED:
-            visible.update({"flute_count", "tool_material"})
-        if tool in {"Tap", "Thread Mill"}:
-            visible.update(_THREAD_DETAIL_FIELDS)
-        if tool in self._INDEXABLE:
-            visible.update({"insert_count", "linked_insert_id"})
-        if tool == "Ball Nose End Mill":
-            visible.add("ball_radius_mm")
-        if tool in {"Bull Nose / Corner Radius End Mill", "Round Insert / Bull Cutter"}:
-            visible.add("corner_radius_mm")
-        for key, widget in self.inputs.items():
-            label = self.form.labelForField(widget)
-            widget.setVisible(key in visible)
-            if label is not None:
-                label.setVisible(key in visible)
-
-    def _save(self) -> None:
-        if not self.inputs["display_name"].text().strip():
-            QMessageBox.information(self, "Add tool", "Give this tool a workshop name first.")
-            self.inputs["display_name"].setFocus()
-            return
-        self.accept()
-
-    def values(self) -> dict[str, Any]:
-        values: dict[str, Any] = {"tool_type": self.tool_type.currentText(), "source_type": "user_supplied", "needs_review": True}
-        for key, widget in self.inputs.items():
-            if widget.isHidden():
-                continue
-            raw = widget.currentData() if isinstance(widget, QComboBox) else widget.text().strip()
-            if raw not in (None, ""):
-                values[key] = raw
-        details = _thread_details({key: str(values.pop(key, "")) for key in _THREAD_DETAIL_FIELDS})
-        if details:
-            values["details"] = details
-        return values
+    def _update_preview(self, *_args) -> None:
+        _sizes, rejected = parse_size_list(self.sizes.text(), self.tool_type.currentText())
+        tools = self.tools()
+        lines = []
+        if tools:
+            names = ", ".join(tool["display_name"] for tool in tools[:6]) + (" …" if len(tools) > 6 else "")
+            lines.append(f"Will add {len(tools)} tool{'s' if len(tools) != 1 else ''}: {names}")
+        if rejected:
+            lines.append("Not understood: " + ", ".join(rejected))
+        self.preview.setText("\n".join(lines) or "Nothing to add yet.")
+        self.buttons.button(QDialogButtonBox.Save).setEnabled(bool(tools))
 
 
 class WorkshopNotesDialog(QDialog):
@@ -452,8 +285,48 @@ class WorkshopFeedbackDialog(QDialog):
         return category, note, actuals
 
 
+class _SortItem(QTableWidgetItem):
+    """Sorts by a numeric key when one is set, otherwise by its text."""
+
+    def __lt__(self, other):
+        mine, theirs = self.data(Qt.UserRole + 1), other.data(Qt.UserRole + 1)
+        if mine is not None and theirs is not None:
+            return mine < theirs
+        return self.text().casefold() < other.text().casefold()
+
+
+_TOOL_FILTERS: tuple[tuple[str, frozenset[str] | None], ...] = (
+    ("All tools", None),
+    ("Drills", frozenset({"Drill", "Spot Drill / Centre Drill"})),
+    ("Taps and thread mills", frozenset({"Tap", "Thread Mill"})),
+    ("Reamers", frozenset({"Reamer"})),
+    ("End mills", frozenset({"End Mill", "Ball Nose End Mill", "Bull Nose / Corner Radius End Mill"})),
+    ("Chamfer tools", frozenset({"Chamfer Mill", "Chamfer Tool", "Countersink"})),
+    ("Insert cutters", frozenset({"Face Mill", "Indexable End Mill", "Round Insert / Bull Cutter"})),
+)
+_COLUMNS = {
+    "tool": ("Name", "Type", "Size", "Material", "Coating", "Review"),
+    "insert": ("Name", "Designation", "Grade", "Radius", "Review"),
+}
+
+
+def _differs(stored: Any, entered: Any) -> bool:
+    def normal(value: Any) -> Any:
+        if value is None or value == "" or value == [] or value == {}:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        return value.strip() if isinstance(value, str) else value
+
+    return normal(stored) != normal(entered)
+
+
 class ToolLibraryDialog(QDialog):
-    """Searchable, two-list library with review-first AI imports."""
+    """Tools and inserts listed on the left, the selected record edited on the right."""
 
     def __init__(self, library: ToolLibraryService, import_service_factory: Callable[[], Any], parent=None, *, model: str = DEFAULT_MODEL):
         super().__init__(parent)
@@ -461,49 +334,106 @@ class ToolLibraryDialog(QDialog):
         self.import_service_factory = import_service_factory
         self.model = model
         self.setWindowTitle("CutData AI — Tool Library")
-        self.resize(1040, 690)
+        self.resize(1180, 720)
+        self._filling = False
+        self._current: dict[str, int | None] = {"tool": None, "insert": None}
         root = QVBoxLayout(self)
         title = QLabel("TOOL LIBRARY")
         title.setObjectName("sectionTitle")
         root.addWidget(title)
-        sub = QLabel("Cutter bodies and inserts are stored separately, so shared tips are entered once and linked to each cutter.")
+        sub = QLabel("Select a record to edit it; changes save as you go. Inserts are kept once and linked to each cutter that uses them.")
         sub.setWordWrap(True)
         sub.setObjectName("hint")
         root.addWidget(sub)
         self.tabs = QTabWidget()
         self.searches: dict[str, QLineEdit] = {}
         self.tables: dict[str, QTableWidget] = {}
-        for key, tab_title in (("tool", "Cutter bodies / tools"), ("insert", "Inserts / tips")):
-            page = QWidget()
-            page_layout = QVBoxLayout(page)
+        self.panels: dict[str, Any] = {"tool": ToolPanel(library), "insert": InsertPanel(library)}
+        self.status: dict[str, QLabel] = {}
+        self._editors: dict[str, QWidget] = {}
+        self._empty: dict[str, QLabel] = {}
+        self.type_filter = QComboBox()
+        for label, types in _TOOL_FILTERS:
+            self.type_filter.addItem(label, types)
+        self.type_filter.currentIndexChanged.connect(lambda _index: self._refresh("tool"))
+        for key, tab_title in (("tool", "Tools"), ("insert", "Inserts / tips")):
+            splitter = QSplitter(Qt.Horizontal)
+            left = QWidget()
+            left_layout = QVBoxLayout(left)
+            left_layout.setContentsMargins(0, 0, 0, 0)
+            search_row = QHBoxLayout()
             search = QLineEdit()
-            search.setPlaceholderText("Search name, manufacturer, family or code…")
-            table = QTableWidget(0, 4)
-            table.setHorizontalHeaderLabels(["Name", "Identity", "Size", "Status"])
+            search.setPlaceholderText("Search name, manufacturer or code…")
+            search.setClearButtonEnabled(True)
+            search_row.addWidget(search, 1)
+            if key == "tool":
+                search_row.addWidget(self.type_filter)
+            table = QTableWidget(0, len(_COLUMNS[key]))
+            table.setHorizontalHeaderLabels(list(_COLUMNS[key]))
             table.setSelectionBehavior(QTableWidget.SelectRows)
             table.setSelectionMode(QTableWidget.SingleSelection)
             table.setEditTriggers(QTableWidget.NoEditTriggers)
             table.setAlternatingRowColors(True)
+            table.verticalHeader().setVisible(False)
             table.horizontalHeader().setStretchLastSection(True)
-            page_layout.addWidget(search)
-            page_layout.addWidget(table, 1)
+            table.setSortingEnabled(True)
+            table.sortByColumn(0, Qt.AscendingOrder)
+            left_layout.addLayout(search_row)
+            left_layout.addWidget(table, 1)
+            right = QWidget()
+            right_layout = QVBoxLayout(right)
+            right_layout.setContentsMargins(8, 0, 0, 0)
+            empty = QLabel("Select a record on the left, or use ADD to create one.")
+            empty.setObjectName("hint")
+            empty.setWordWrap(True)
+            empty.setAlignment(Qt.AlignTop)
+            editor = QWidget()
+            editor_layout = QVBoxLayout(editor)
+            editor_layout.setContentsMargins(0, 0, 0, 0)
+            editor_layout.addWidget(_scrolled(self.panels[key]), 1)
+            panel_actions = QHBoxLayout()
+            look_up = QPushButton("LOOK UP WITH AI")
+            look_up.setToolTip("Search for this record's catalogue details and review them before they are saved.")
+            look_up.clicked.connect(lambda _checked=False: self._import(True))
+            panel_actions.addWidget(look_up)
+            if key == "tool":
+                notes = QPushButton("WORKSHOP NOTES")
+                notes.clicked.connect(self._notes)
+                panel_actions.addWidget(notes)
+            status = QLabel("")
+            status.setObjectName("hint")
+            panel_actions.addStretch(1)
+            panel_actions.addWidget(status)
+            editor_layout.addLayout(panel_actions)
+            right_layout.addWidget(empty)
+            right_layout.addWidget(editor, 1)
+            splitter.addWidget(left)
+            splitter.addWidget(right)
+            splitter.setStretchFactor(0, 3)
+            splitter.setStretchFactor(1, 2)
             self.searches[key] = search
             self.tables[key] = table
+            self.status[key] = status
+            self._editors[key] = editor
+            self._empty[key] = empty
             search.textChanged.connect(lambda _text, kind=key: self._refresh(kind))
-            self.tabs.addTab(page, tab_title)
+            table.itemSelectionChanged.connect(lambda kind=key: self._selection_changed(kind))
+            self.panels[key].committed.connect(lambda kind=key: self._save_current(kind))
+            self.tabs.addTab(splitter, tab_title)
+        self.tabs.currentChanged.connect(lambda _index: self._flush())
         root.addWidget(self.tabs, 1)
 
         actions = QHBoxLayout()
-        for text, callback in (
-            ("ADD TOOL", lambda: self._add("tool")),
-            ("ADD INSERT / TIP", lambda: self._add("insert")),
-            ("EDIT", self._edit),
-            ("DUPLICATE", self._duplicate),
-            ("DELETE", self._delete),
-            ("ADD WITH AI", lambda: self._import(False)),
-            ("ENRICH WITH AI", lambda: self._import(True)),
-            ("WORKSHOP NOTES", self._notes),
-        ):
+        self.add_button = QPushButton("ADD")
+        menu = QMenu(self.add_button)
+        menu.addAction("Tool…", lambda: self._add("tool"))
+        menu.addAction("Set of tools (several sizes)…", self._add_set)
+        menu.addAction("Insert / tip…", lambda: self._add("insert"))
+        menu.addSeparator()
+        menu.addAction("Look one up with AI…", lambda: self._import(False))
+        self.add_button.setMenu(menu)
+        actions.addWidget(self.add_button)
+        for text, callback in (("DUPLICATE", self._duplicate), ("DELETE", self._delete)):
             button = QPushButton(text)
             button.clicked.connect(callback)
             actions.addWidget(button)
@@ -514,7 +444,10 @@ class ToolLibraryDialog(QDialog):
         root.addLayout(actions)
         self._refresh("tool")
         self._refresh("insert")
+        for key in ("tool", "insert"):
+            self._load_panel(key, self._selected_id(key))
 
+    # Selection and list ---------------------------------------------------
     def _kind(self) -> str:
         return "tool" if self.tabs.currentIndex() == 0 else "insert"
 
@@ -525,95 +458,193 @@ class ToolLibraryDialog(QDialog):
         item = table.item(row, 0) if row >= 0 else None
         return int(item.data(Qt.UserRole)) if item and item.data(Qt.UserRole) is not None else None
 
-    def _refresh(self, kind: str) -> None:
-        table = self.tables[kind]
+    def _records(self, kind: str) -> list[dict[str, Any]]:
         search = self.searches[kind].text()
-        records = self.library.list_tools(search) if kind == "tool" else self.library.list_inserts(search)
-        previous = self._selected_id(kind)
-        table.setRowCount(len(records))
-        selected_row = -1
-        for row, record in enumerate(records):
-            if record.get("id") == previous:
-                selected_row = row
-            if kind == "tool":
-                identity = " ".join(str(part) for part in (record.get("manufacturer"), record.get("product_family"), record.get("model_code"), record.get("manufacturer_part_number")) if part)
-                size = (f"Ø{record['diameter_mm']:g} mm" if record.get("diameter_mm") is not None else "Size unknown")
-                if record.get("insert_count"):
-                    size += f" · {record['insert_count']} tips"
-            else:
-                identity = " ".join(str(part) for part in (record.get("manufacturer"), record.get("designation"), record.get("grade")) if part)
-                size = (f"R{record['corner_radius_mm']:g} mm" if record.get("corner_radius_mm") is not None else str(record.get("shape") or "Dimensions unknown"))
-            status = "NEEDS REVIEW" if record.get("needs_review") else str(record.get("confidence", "unknown")).upper()
-            for col, text in enumerate((record.get("display_name", ""), identity, size, status)):
-                cell = QTableWidgetItem(str(text or ""))
-                if col == 0:
-                    cell.setData(Qt.UserRole, int(record["id"]))
-                if col == 3:
-                    cell.setBackground(QColor(_STATUS_COLORS["unknown"] if record.get("needs_review") else _STATUS_COLORS["source_confirmed"] if record.get("confidence") == "high" else _STATUS_COLORS["ai_inferred"]))
-                    cell.setForeground(QColor("#17212B"))
-                cell.setToolTip(str(text or ""))
-                table.setItem(row, col, cell)
-        table.resizeColumnsToContents()
-        table.setColumnWidth(0, max(220, table.columnWidth(0)))
-        table.setColumnWidth(1, max(260, table.columnWidth(1)))
-        if selected_row >= 0:
-            table.selectRow(selected_row)
+        if kind == "insert":
+            return self.library.list_inserts(search)
+        types = self.type_filter.currentData()
+        return [record for record in self.library.list_tools(search) if types is None or record.get("tool_type") in types]
+
+    @staticmethod
+    def _cells(kind: str, record: dict[str, Any]) -> list[tuple[str, float | None]]:
+        review = "Needs review" if record.get("needs_review") else ""
+        if kind == "insert":
+            radius = record.get("corner_radius_mm")
+            return [
+                (str(record.get("display_name") or ""), None),
+                (str(record.get("designation") or ""), None),
+                (str(record.get("grade") or ""), None),
+                (f"R{radius:g}" if radius is not None else "", float(radius) if radius is not None else -1.0),
+                (review, None),
+            ]
+        diameter = record.get("diameter_mm")
+        details = record.get("details") or {}
+        size = f"Ø{diameter:g} mm" if diameter is not None else ""
+        if record.get("tool_type") == "Tap" and details.get("thread_size"):
+            pitch = details.get("thread_pitch_mm")
+            size = str(details["thread_size"]) + (f" x {pitch:g}" if pitch else "")
+        if record.get("insert_count"):
+            size += f" · {record['insert_count']} tips"
+        elif record.get("flute_count"):
+            size += f" · {record['flute_count']} fl"
+        return [
+            (str(record.get("display_name") or ""), None),
+            (short_tool_type(str(record.get("tool_type") or "")), None),
+            (size, float(diameter) if diameter is not None else -1.0),
+            (str(record.get("tool_material") or ""), None),
+            (str(record.get("coating") or ""), None),
+            (review, None),
+        ]
+
+    def _refresh(self, kind: str, select: int | None = None) -> None:
+        table = self.tables[kind]
+        records = self._records(kind)
+        wanted = select if select is not None else self._selected_id(kind)
+        self._filling = True
+        try:
+            table.setSortingEnabled(False)
+            table.setRowCount(len(records))
+            for row, record in enumerate(records):
+                for col, (text, sort_key) in enumerate(self._cells(kind, record)):
+                    cell = _SortItem(text)
+                    cell.setToolTip(text)
+                    if col == 0:
+                        cell.setData(Qt.UserRole, int(record["id"]))
+                    if sort_key is not None:
+                        cell.setData(Qt.UserRole + 1, sort_key)
+                    table.setItem(row, col, cell)
+            table.setSortingEnabled(True)
+            table.resizeColumnsToContents()
+            table.setColumnWidth(0, min(max(200, table.columnWidth(0)), 320))
+            table.clearSelection()
+            table.setCurrentCell(-1, -1)
+            for row in range(table.rowCount()):
+                if wanted is not None and table.item(row, 0).data(Qt.UserRole) == wanted:
+                    table.selectRow(row)
+                    break
+        finally:
+            self._filling = False
+        if self._selected_id(kind) != self._current[kind]:
+            self._load_panel(kind, self._selected_id(kind))
+
+    def _selection_changed(self, kind: str) -> None:
+        target = self._selected_id(kind)
+        if self._filling or target == self._current[kind]:
+            return
+        self._save_current(kind, then_select=target)
+        if self._current[kind] != target:
+            self._load_panel(kind, target)
 
     def _record(self, kind: str, record_id: int | None) -> dict[str, Any] | None:
         if record_id is None:
             return None
         return self.library.get_tool(record_id) if kind == "tool" else self.library.get_insert(record_id)
 
-    def _add(self, kind: str, initial: dict[str, Any] | None = None) -> None:
-        dialog = AddToolWizard(self.library.list_inserts(), self, initial) if kind == "tool" else RecordEditorDialog(kind, initial, self.library.list_inserts(), self)
-        if dialog.exec() != QDialog.Accepted:
+    def _load_panel(self, kind: str, record_id: int | None) -> None:
+        record = self._record(kind, record_id)
+        self._current[kind] = int(record["id"]) if record else None
+        self._editors[kind].setVisible(record is not None)
+        self._empty[kind].setVisible(record is None)
+        self.status[kind].setText("")
+        if record:
+            self.panels[kind].load(record)
+
+    # Saving ---------------------------------------------------------------
+    def _save_current(self, kind: str, then_select: int | None = None) -> None:
+        """Write the panel's changes to the selected record, if there are any."""
+
+        panel = self.panels[kind]
+        record = self._record(kind, self._current[kind])
+        if record is None or not panel.dirty:
+            return
+        changed = {key: value for key, value in panel.values().items() if _differs(record.get(key), value)}
+        if not changed:
+            panel.dirty = False
             return
         try:
-            values = dialog.values()
+            saved = self.library.update_tool(record["id"], changed) if kind == "tool" else self.library.update_insert(record["id"], changed)
+        except Exception as exc:
+            self.status[kind].setText(f"Not saved: {exc}")
+            return
+        panel.set_record(saved)
+        self.status[kind].setText("Saved")
+        self._refresh(kind, select=then_select if then_select is not None else int(saved["id"]))
+        if kind == "insert":
+            self.panels["tool"].refresh_inserts()
+
+    def _flush(self) -> None:
+        for kind in ("tool", "insert"):
+            self._save_current(kind)
+
+    def done(self, result: int) -> None:
+        self._flush()
+        super().done(result)
+
+    # Actions --------------------------------------------------------------
+    def _show(self, kind: str, record_id: int) -> None:
+        """Select a record, clearing any filter that would hide it."""
+
+        self.tabs.setCurrentIndex(0 if kind == "tool" else 1)
+        self._refresh(kind, select=record_id)
+        if self._selected_id(kind) != record_id:
+            self.searches[kind].clear()
             if kind == "tool":
-                self.library.add_tool(values)
-            else:
-                self.library.add_insert(values)
+                self.type_filter.setCurrentIndex(0)
+            self._refresh(kind, select=record_id)
+        if kind == "insert":
+            self.panels["tool"].refresh_inserts()
+
+    def _create(self, kind: str, values: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            saved = self.library.add_tool(values) if kind == "tool" else self.library.add_insert(values)
         except Exception as exc:
             QMessageBox.warning(self, "Tool Library", str(exc))
-            return
-        self._refresh(kind)
+            return None
+        self._show(kind, int(saved["id"]))
+        return saved
 
-    def _edit(self) -> None:
-        kind = self._kind()
-        record = self._record(kind, self._selected_id(kind))
-        if record:
-            dialog = RecordEditorDialog(kind, record, self.library.list_inserts(), self)
-            if dialog.exec() == QDialog.Accepted:
-                try:
-                    if kind == "tool":
-                        self.library.update_tool(record["id"], dialog.values())
-                    else:
-                        self.library.update_insert(record["id"], dialog.values())
-                except Exception as exc:
-                    QMessageBox.warning(self, "Tool Library", str(exc))
-                    return
-                self._refresh(kind)
+    def _add(self, kind: str, initial: dict[str, Any] | None = None) -> None:
+        self._flush()
+        if kind == "tool":
+            dialog: QDialog = AddToolDialog(self.library.list_inserts(), self, initial, self.library)
+        else:
+            dialog = AddInsertDialog(self.library, self, initial)
+        if dialog.exec() == QDialog.Accepted:
+            self._create(kind, dialog.values())  # type: ignore[attr-defined]
+
+    def _add_set(self) -> None:
+        self._flush()
+        dialog = AddSetDialog(self.library, self)
+        if dialog.exec() == QDialog.Accepted:
+            self._create_set(dialog.tools())
+
+    def _create_set(self, tools: list[dict[str, Any]]) -> None:
+        saved = None
+        for values in tools:
+            try:
+                saved = self.library.add_tool(values)
+            except Exception as exc:
+                QMessageBox.warning(self, "Tool Library", str(exc))
+                break
+        if saved:
+            self._show("tool", int(saved["id"]))
 
     def _duplicate(self) -> None:
         kind = self._kind()
-        record_id = self._selected_id(kind)
+        self._flush()
+        record_id = self._current[kind]
         if record_id is None:
             return
         try:
-            if kind == "tool":
-                self.library.duplicate_tool(record_id)
-            else:
-                self.library.duplicate_insert(record_id)
+            copy = self.library.duplicate_tool(record_id) if kind == "tool" else self.library.duplicate_insert(record_id)
         except Exception as exc:
             QMessageBox.warning(self, "Tool Library", str(exc))
             return
-        self._refresh(kind)
+        self._show(kind, int(copy["id"]))
 
     def _delete(self) -> None:
         kind = self._kind()
-        record_id = self._selected_id(kind)
-        record = self._record(kind, record_id)
+        record = self._record(kind, self._current[kind])
         if record is None:
             return
         message = f"Delete {record.get('display_name', 'this record')}?"
@@ -621,12 +652,28 @@ class ToolLibraryDialog(QDialog):
             message += " Any linked cutters will be kept, unlinked, and marked Needs Review."
         if QMessageBox.question(self, "Delete library record", message) != QMessageBox.Yes:
             return
+        self._remove(kind, int(record["id"]))
+
+    def _remove(self, kind: str, record_id: int) -> None:
+        self.panels[kind].dirty = False
         if kind == "tool":
             self.library.delete_tool(record_id)
         else:
             self.library.delete_insert(record_id)
-            self._refresh("tool")
+            self.panels["tool"].refresh_inserts()
+            self._reload("tool")
+        self._current[kind] = None
         self._refresh(kind)
+        self._load_panel(kind, self._selected_id(kind))
+
+    def _reload(self, kind: str) -> None:
+        """Re-read the selected record after something else changed it."""
+
+        current = self._current[kind]
+        self._current[kind] = None
+        self._refresh(kind, select=current)
+        if self._current[kind] is None:
+            self._load_panel(kind, self._selected_id(kind))
 
     @staticmethod
     def _candidate_values(candidate, kind: str) -> dict[str, Any]:
@@ -650,9 +697,10 @@ class ToolLibraryDialog(QDialog):
 
     def _import(self, enrich: bool) -> None:
         kind = self._kind()
-        record = self._record(kind, self._selected_id(kind)) if enrich else None
+        self._flush()
+        record = self._record(kind, self._current[kind]) if enrich else None
         if enrich and record is None:
-            QMessageBox.information(self, "AI enrichment", "Select a tool or insert first.")
+            QMessageBox.information(self, "AI look-up", "Select a tool or insert first.")
             return
         dialog = ToolImportDialog(
             self.import_service_factory, kind,
@@ -666,23 +714,21 @@ class ToolLibraryDialog(QDialog):
         values = self._candidate_values(dialog.candidate, kind)
         try:
             if record:
+                # Keep facts the look-up does not know about, such as a thread size.
+                values["details"] = {**(record.get("details") or {}), **values["details"]}
                 if kind == "tool":
                     self.library.update_tool(record["id"], values)
                 else:
                     self.library.update_insert(record["id"], values)
-            elif kind == "tool":
-                self.library.add_tool(values)
+                self._reload(kind)
             else:
-                self.library.add_insert(values)
+                self._create(kind, values)
         except Exception as exc:
-            QMessageBox.warning(self, "AI import", str(exc))
-            return
-        self._refresh(kind)
+            QMessageBox.warning(self, "AI look-up", str(exc))
 
     def _notes(self) -> None:
-        record_id = self._selected_id("tool")
-        record = self.library.get_tool(record_id) if record_id else None
+        record = self.library.get_tool(self._current["tool"]) if self._current["tool"] else None
         if not record:
-            QMessageBox.information(self, "Workshop notes", "Select a cutter body/tool first.")
+            QMessageBox.information(self, "Workshop notes", "Select a tool first.")
             return
         WorkshopNotesDialog(self.library, record, self).exec()
