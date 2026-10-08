@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -178,7 +179,21 @@ class AboutDialog(QDialog):
         layout.addWidget(details)
         self.details = details
 
+        # Offered when the window that opened this dialog can check for updates.
+        self.update_button = QPushButton("CHECK FOR UPDATES")
+        self.auto_update = QCheckBox("Check for updates when the app starts")
+        owner = parent if hasattr(parent, "check_for_updates") else None
+        self.update_button.setVisible(owner is not None)
+        self.auto_update.setVisible(owner is not None)
+        if owner is not None:
+            self.auto_update.setChecked(owner.auto_update_enabled())
+            self.auto_update.toggled.connect(owner.set_auto_update_enabled)
+            self.update_button.clicked.connect(lambda: owner.check_for_updates(manual=True))
+        layout.addWidget(self.auto_update)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.addButton(self.update_button, QDialogButtonBox.ActionRole)
+        self.update_button.setVisible(owner is not None)
         buttons.accepted.connect(self.accept)
         layout.addWidget(buttons)
 

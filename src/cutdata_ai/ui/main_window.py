@@ -98,6 +98,7 @@ from ..services.settings_service import (
 from ..services.recent_summary import recent_item_text
 from ..services.tool_library import ToolLibraryService
 from .dialogs import AboutDialog, SettingsDialog
+from .update_dialog import UpdateChecker, UpdateDialog, show_update_result
 from .tool_library_dialog import AddToolWizard, ToolLibraryDialog, WorkshopFeedbackDialog
 from .result_layout import peck_display, result_layout_for_family, effective_lateral_value
 from .theme import apply_theme
@@ -255,6 +256,12 @@ class MainWindow(QMainWindow):
         self._reload_ai_service()
         self._update_status()
         self._restoring_state = False
+        self._update_checker = UpdateChecker(parent=self)
+        self._update_checker.finished.connect(self._update_check_finished)
+        self._update_check_manual = False
+        # Only the installed program checks by itself; source runs and tests do not.
+        if getattr(sys, "frozen", False) and self.auto_update_enabled():
+            QTimer.singleShot(4000, self.check_for_updates)
 
     # UI construction -----------------------------------------------------
     def _build_ui(self) -> None:
@@ -2602,6 +2609,34 @@ class MainWindow(QMainWindow):
     # Settings and helpers -------------------------------------------------
     def _open_about(self) -> None:
         AboutDialog(self).exec()
+
+    # Updates ---------------------------------------------------------------
+    def auto_update_enabled(self) -> bool:
+        return bool(self.settings_service.load_json_setting("update_auto_check", True))
+
+    def set_auto_update_enabled(self, enabled: bool) -> None:
+        self.settings_service.save_json_setting("update_auto_check", bool(enabled))
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        self._update_check_manual = self._update_check_manual or manual
+        self._update_checker.start()
+
+    def _update_check_finished(self, info, error: str) -> None:
+        manual, self._update_check_manual = self._update_check_manual, False
+        if info is None or error:
+            # A start-up check stays silent unless there is something to install.
+            if manual:
+                show_update_result(QApplication.activeWindow() or self, info, error)
+            return
+        if not manual and info.version == self.settings_service.load_json_setting("update_skip_version", ""):
+            return
+        if self._thread is not None:
+            # Never interrupt a running calculation; the next start asks again.
+            if not manual:
+                return
+        dialog = UpdateDialog(info, QApplication.activeWindow() or self)
+        if dialog.exec() == UpdateDialog.SKIP:
+            self.settings_service.save_json_setting("update_skip_version", info.version)
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.database, replace(self.settings), self)

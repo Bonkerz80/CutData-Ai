@@ -193,7 +193,7 @@ Install Inno Setup 7, then run:
 .\build_installer.ps1
 ```
 
-The result is `installer\CutData-AI-Setup-0.2.9.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
+The result is `installer\CutData-AI-Setup-0.2.10.exe`. It installs per-user under `%LOCALAPPDATA%\Programs\CutData AI`, creates Start Menu and Desktop shortcuts using the official PPT CutData icon, and can be removed from Windows Installed apps. The complete application folder, including the bundled Qt runtime, is included in the installer. User settings, workshop library, and calculation history remain in `%LOCALAPPDATA%\CutData AI` when the application is uninstalled.
 
 ### Previous-release baseline: 0.1.13
 
@@ -204,6 +204,16 @@ Builds isolate native dependency discovery from developer tools on PATH. Qt uses
 ```powershell
 .\.venv\Scripts\python.exe scripts\verify_windows_bundle.py "dist\CutData AI\CutData AI.exe" --launch-check
 ```
+
+## Updates
+
+The installed app checks the latest published release of this repository a few
+seconds after it starts and offers to download and run the installer when the
+release is newer. For that to work, each release must be published (not a draft
+or pre-release) with the tag `vX.Y.Z` and the installer attached under its
+built name, `CutData-AI-Setup-X.Y.Z.exe`. The release description is shown in
+the update box. The start-up check can be turned off in **About**, which also
+has a **Check for updates** button. Running from source never checks by itself.
 
 ## Project map
 

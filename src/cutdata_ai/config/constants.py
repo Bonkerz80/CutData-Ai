@@ -32,7 +32,7 @@ from .branding import (
 )
 
 
-APP_VERSION = "0.2.9"
+APP_VERSION = "0.2.10"
 PROMPT_VERSION = "2026-09-28.1"
 SCHEMA_VERSION = "3"
 DEFAULT_MODEL = "gpt-6.1-sol"
